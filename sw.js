@@ -1,8 +1,8 @@
 // Service worker: aplikacija deluje tudi brez povezave.
-const VERSION = "nadzorni-svet-v1";
+const VERSION = "nadzorni-svet-v2";
 const SHELL = [
   "./", "./index.html", "./app.js", "./config.js", "./manifest.webmanifest",
-  "./msal-browser.min.js", "./jszip.min.js", "./mammoth.browser.min.js",
+  "./msal-browser.min.js", "./jszip.min.js", "./mammoth.browser.min.js", "./xlsx.full.min.js",
   "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png", "./favicon-32.png"
 ];
 self.addEventListener("install", e => {
