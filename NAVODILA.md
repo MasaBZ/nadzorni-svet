@@ -38,17 +38,25 @@ Podatki se shranjujejo v vaš službeni OneDrive, v mapo **Aplikacije → Nadzor
 Brez ključa: aplikacija pripravi navodilo, ki ga prilepite v svojo aplikacijo Claude, odgovor pa prilepite nazaj (gumb **Kopiraj navodilo**).
 Z API ključem (console.anthropic.com, plačilo po porabi) Claude piše neposredno v aplikaciji: **Nastavitve → Claude**.
 
-### 4. Namestitev
+### 4. Soniox – sprotni prepis (priporočeno)
+Z ključem Soniox se prepis seje piše sam med snemanjem, z ločenimi govorci (Govorec 1, Govorec 2 …), in se shrani v korak 4. Prepisa v Wordu ni več treba delati.
+1. Na console.soniox.com ustvarite ključ (**API keys**) in po potrebi napolnite dobroimetje.
+2. V aplikaciji: **Nastavitve → Soniox – sprotni prepis**, prilepite ključ, kliknite **Shrani** in **Preizkusi ključ**.
+3. Ključ se shrani samo na napravi, zato ga vpišite na računalniku in na telefonu.
+
+Med snemanjem mora biti naprava povezana v internet. Če se povezava prekine, aplikacija snema naprej in se sama znova poveže; v prepisu je mesto označeno z [prekinitev prepisa]. Posnetek se v vsakem primeru shrani tudi kot zvočna datoteka.
+
+### 5. Namestitev
 - **Windows:** odprite naslov v Edgeu ali Chromu in kliknite **Namesti aplikacijo** (zgoraj desno v aplikaciji ali ikona v naslovni vrstici).
 - **iPhone:** odprite naslov v Safariju, tapnite **Deli → Dodaj na začetni zaslon**. Aplikacijo odpirajte vedno z ikone.
 
-### 5. Prenos podatkov iz različice v Claudu
+### 6. Prenos podatkov iz različice v Claudu
 V aplikaciji v Claudu: **Nastavitve → Izvozi vse podatke**. V novi aplikaciji: **Nastavitve → Varnostna kopija → Uvozi podatke**. Uvoz samodejno ustvari družbo z nazivom iz izvoza.
 
 ## Potek seje
 1. **Seje → Nova seja**: dnevni red, vabilo (Word).
-2. Na seji: **Začni snemanje** (telefon na mizi, zaslon odklenjen, aplikacija v ospredju). Po koncu **Ustavi in shrani**; posnetek se naloži v OneDrive (Aplikacije → Nadzorni svet → Posnetki).
-3. Prepis: v Wordu za splet **Narekuj → Prepis → Naloži zvok**, prepis shranite kot .docx in ga naložite v korak 4.
+2. Na seji: **Začni snemanje** (telefon ali računalnik na mizi, zaslon odklenjen, aplikacija v ospredju). Če je vpisan ključ Soniox, se prepis sproti izpisuje pod časovnikom. Po koncu **Ustavi in shrani**: prepis je že v koraku 4, posnetek pa se naloži v OneDrive (Aplikacije → Nadzorni svet → Posnetki).
+3. Brez Sonioxa: v Wordu za splet **Narekuj → Prepis → Naloži zvok**, prepis shranite kot .docx in ga naložite v korak 4.
 4. **Pripravi osnutek zapisnika**, preglejte mesta [PREVERI], prenesite Word.
 5. **Izlušči sklepe** in jih dodajte v evidenco.
 

@@ -11,7 +11,7 @@ const $=(s,r=document)=>r.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const clone=o=>JSON.parse(JSON.stringify(o??null));
-const NUM=(()=>{try{return new Intl.NumberFormat("sl-SI",{maximumFractionDigits:0,useGrouping:"always"})}catch(e){return new Intl.NumberFormat("sl-SI",{maximumFractionDigits:0})}})();
+const NUM=new Intl.NumberFormat("sl-SI",{maximumFractionDigits:0});
 const EUR=v=>v==null||!isFinite(v)?"–":NUM.format(Math.round(v))+" €";
 const PCT=v=>v==null||!isFinite(v)?"–":(Math.round(v*10)/10).toLocaleString("sl-SI")+" %";
 const today=()=>{const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10)};
@@ -252,7 +252,7 @@ const DEF_TOCKE=["Ugotovitev sklepčnosti in potrditev dnevnega reda","Potrditev
 
 function druzba(){
   const d=S.druzba||{};
-  return {pravila:d.pravila||"",naziv:d.naziv||"",naslov:d.naslov||"",direktor:d.direktor||"",kraj:d.kraj||"",
+  return {naziv:d.naziv||"",naslov:d.naslov||"",direktor:d.direktor||"",kraj:d.kraj||"",
     clani:Array.isArray(d.clani)&&d.clani.length?d.clani:[{ime:"",funkcija:"predsednica"},{ime:"",funkcija:"namestnik predsednice"},{ime:"",funkcija:"član"}]};
 }
 const predsednica=()=>{const c=druzba().clani.find(c=>/predsedni/i.test(c.funkcija)&&!/namest/i.test(c.funkcija));return c&&c.ime?c.ime:"[ime predsednice]"};
@@ -303,33 +303,15 @@ function installNote(){
 }
 
 /* ---------- izračuni ---------- */
-/* ---------- poslovanje: model ----------
-   S.finance[leto] = {leto, druzbaId, plan:{rows,vir,uvozeno,sejaId}, obdobja:{"6":{do:6,rows,vir,uvozeno,sejaId}}}
-   row = {naziv, sek:"o"|"p", tip:"p"|"s"|"x", plan, real, lani, planLani}
-*/
-const OBD_IME=d=>d===12?"januar–december":"januar–"+MESF[d-1];
-const findRow=(rows,sek,re)=>{const c=(rows||[]).filter(r=>r.sek===sek&&r.tip==="s"&&re.test(r.naziv));return c[c.length-1]||null};
-function rowTotals(rows,col){
-  const p=findRow(rows,"p",/prihod/i), o=findRow(rows,"o",/odhod/i);
-  const sumP=(rows||[]).filter(r=>r.sek==="p"&&r.tip==="p").reduce((s,r)=>s+(+r[col]||0),0);
-  const sumO=(rows||[]).filter(r=>r.sek==="o"&&r.tip==="p").reduce((s,r)=>s+(+r[col]||0),0);
-  const P=p&&p[col]!=null?+p[col]:(sumP||null), O=o&&o[col]!=null?+o[col]:(sumO||null);
-  return {p:P,o:O,z:P!=null&&O!=null?P-O:null};
-}
-function finDoc(y){return S.finance[String(y)]||null}
-function finPeriods(y){const F=finDoc(y);return F&&F.obdobja?Object.values(F.obdobja).sort((a,b)=>a.do-b.do):[]}
-function finSum(y,doMes){
-  const F=finDoc(y)||{};const per=finPeriods(y);const P=doMes?per.find(x=>x.do===doMes):per[per.length-1];
-  const planSrc=F.plan&&F.plan.rows?rowTotals(F.plan.rows,"plan"):(P?rowTotals(P.rows,"plan"):{p:null,o:null,z:null});
-  const o={last:P?P.do:0,period:P||null,pPy:planSrc.p,oPy:planSrc.o,zPy:planSrc.z,hasPlan:planSrc.p!=null||planSrc.o!=null};
-  if(P){const r=rowTotals(P.rows,"real"),l=rowTotals(P.rows,"lani");const k=P.do/12;
-    o.pR=r.p;o.oR=r.o;o.zR=r.z;o.pL=l.p;o.oL=l.o;o.zL=l.z;
-    o.pP=o.pPy!=null?o.pPy*k:null;o.oP=o.oPy!=null?o.oPy*k:null;o.zP=o.pP!=null&&o.oP!=null?o.pP-o.oP:null;}
+function finRows(y){const m=(S.finance[String(y)]||{}).m||{};const out=[];for(let i=1;i<=12;i++){const r=m[i]||{};out.push({m:i,pP:r.pP??null,pR:r.pR??null,oP:r.oP??null,oR:r.oR??null})}return out}
+const sum=(a,k)=>a.reduce((s,r)=>s+(r[k]||0),0);
+function finSum(y){
+  const rows=finRows(y); let last=0; rows.forEach(r=>{if(r.pR!=null||r.oR!=null)last=r.m});
+  const ytd=rows.filter(r=>r.m<=last);
+  const o={rows,last,pP:sum(ytd,"pP"),pR:sum(ytd,"pR"),oP:sum(ytd,"oP"),oR:sum(ytd,"oR"),pPy:sum(rows,"pP"),oPy:sum(rows,"oP"),hasPlan:rows.some(r=>r.pP!=null||r.oP!=null)};
+  o.zP=o.pP-o.oP; o.zR=o.pR-o.oR; o.zPy=o.pPy-o.oPy;
   return o;
 }
-function planFor(y,naziv){const F=finDoc(y);if(!F||!F.plan)return null;const n=normN(naziv);const r=(F.plan.rows||[]).find(x=>normN(x.naziv)===n);return r?r.plan:null}
-const normN=s=>String(s||"").toLowerCase().replace(/[^a-zčšž0-9]+/g," ").trim();
-const sum=(a,k)=>a.reduce((s,r)=>s+(r[k]||0),0);
 const isOpen=s=>s.status==="odprt"||s.status==="izvajanje"||!s.status;
 function sklepStats(){const t=today();const open=S.sklepi.filter(isOpen);
   return {odprti:open.length,zapadli:open.filter(s=>s.rok&&s.rok<t).length,realizirani:S.sklepi.filter(s=>s.status==="realiziran").length,skupaj:S.sklepi.length}}
@@ -354,6 +336,35 @@ const tone=p=>p==null?"":p>=100?"good":p>=90?"warn":"bad";
 /* ---------- grafi ---------- */
 function niceMax(v){if(v<=0)return 1;const p=Math.pow(10,Math.floor(Math.log10(v)));const n=v/p;return (n<=1?1:n<=2?2:n<=2.5?2.5:n<=5?5:10)*p}
 function shortEur(v){const a=Math.abs(v);if(a>=1e6)return (v/1e6).toLocaleString("sl-SI",{maximumFractionDigits:1})+" mio";if(a>=1e3)return Math.round(v/1e3)+" tis.";return String(Math.round(v))}
+function chartBars(rows){
+  const vals=rows.flatMap(r=>[r.pP,r.pR]).filter(v=>v!=null);
+  if(!vals.length)return `<p class="muted small">Graf se izriše, ko vnesete plan ali realizacijo prihodkov.</p>`;
+  const W=680,H=230,pl=58,pr=8,pt=14,pb=26,iw=W-pl-pr,ih=H-pt-pb,max=niceMax(Math.max(...vals,1)),bw=iw/12;
+  let g="";for(let t=0;t<=4;t++){const y=pt+ih-ih*t/4;g+=`<line class="grid" x1="${pl}" x2="${W-pr}" y1="${y}" y2="${y}"/><text x="${pl-8}" y="${y+4}" text-anchor="end">${shortEur(max*t/4)}</text>`}
+  let b="";rows.forEach((r,i)=>{const x=pl+i*bw;
+    if(r.pP!=null){const h=ih*Math.max(r.pP,0)/max;b+=`<rect class="bar-plan" x="${x+bw*.16}" y="${pt+ih-h}" width="${bw*.32}" height="${h}" rx="2"><title>${MESF[i]} plan: ${EUR(r.pP)}</title></rect>`}
+    if(r.pR!=null){const h=ih*Math.max(r.pR,0)/max;b+=`<rect class="bar-real" x="${x+bw*.52}" y="${pt+ih-h}" width="${bw*.32}" height="${h}" rx="2"><title>${MESF[i]} realizacija: ${EUR(r.pR)}</title></rect>`}
+    b+=`<text x="${x+bw/2}" y="${H-8}" text-anchor="middle">${MES[i]}</text>`});
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Prihodki po mesecih, plan in realizacija">${g}<line class="axis" x1="${pl}" x2="${W-pr}" y1="${pt+ih}" y2="${pt+ih}"/>${b}</svg>
+  <div class="legend"><span><i style="background:var(--plan)"></i>Plan</span><span><i style="background:var(--accent)"></i>Realizacija</span></div>`;
+}
+function chartCum(rows){
+  let cp=0,cr=0;const P=[],R=[];let last=0;rows.forEach(r=>{if(r.pR!=null||r.oR!=null)last=r.m});
+  rows.forEach(r=>{cp+=(r.pP||0)-(r.oP||0);P.push(r.pP!=null||r.oP!=null?cp:null);if(r.m<=last){cr+=(r.pR||0)-(r.oR||0);R.push(cr)}});
+  const vals=[...P,...R].filter(v=>v!=null);
+  if(!vals.length)return `<p class="muted small">Graf se izriše, ko vnesete prihodke in odhodke.</p>`;
+  const W=680,H=210,pl=58,pr=12,pt=14,pb=26,iw=W-pl-pr,ih=H-pt-pb;
+  let mx=Math.max(0,...vals),mn=Math.min(0,...vals);mx=mx>0?niceMax(mx):0;mn=mn<0?-niceMax(-mn):0;if(mx===mn)mx=1;
+  const X=i=>pl+iw*(i+.5)/12,Y=v=>pt+ih*(mx-v)/(mx-mn);
+  let g="";for(let t=0;t<=4;t++){const v=mn+(mx-mn)*t/4,y=Y(v);g+=`<line class="grid" x1="${pl}" x2="${W-pr}" y1="${y}" y2="${y}"/><text x="${pl-8}" y="${y+4}" text-anchor="end">${shortEur(v)}</text>`}
+  const path=a=>a.map((v,i)=>v==null?"":`${X(i)},${Y(v)}`).filter(Boolean).join(" ");
+  let lab="";rows.forEach((r,i)=>lab+=`<text x="${X(i)}" y="${H-8}" text-anchor="middle">${MES[i]}</text>`);
+  const lastI=R.length-1;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Kumulativni poslovni izid">${g}<line class="axis" x1="${pl}" x2="${W-pr}" y1="${Y(0)}" y2="${Y(0)}"/>
+  <polyline class="ln-plan" points="${path(P)}"/>${R.length?`<polyline class="ln-real" points="${path(R)}"/><circle class="dot-real" cx="${X(lastI)}" cy="${Y(R[lastI])}" r="5"><title>${MESF[lastI]}: ${EUR(R[lastI])}</title></circle>`:""}${lab}</svg>
+  <div class="legend"><span><i style="background:var(--plan)"></i>Plan (kumulativno)</span><span><i style="background:var(--accent)"></i>Realizacija (kumulativno)</span></div>`;
+}
+
 /* ---------- PREGLED ---------- */
 function vPregled(){
   const t=today();
@@ -377,15 +388,14 @@ function vPregled(){
       ${nujni.length?`<div class="list">${nujni.map(s=>`<div class="item"><div class="main"><div class="small muted num">${esc(s.oznaka||"")}</div><div>${esc(trunc(s.besedilo,140))}</div></div><span class="chip ${isOverdue(s)?"bad":""}">${s.rok?"rok "+esc(fmtDate(s.rok)):"brez roka"}</span></div>`).join("")}</div>`:`<p class="muted small">Ni odprtih sklepov.</p>`}
     </section>
   </div>
-  <section class="panel"><div class="panel-head"><h2>Poslovanje ${f.last?esc(OBD_IME(f.last))+" ":""}${y}</h2><button class="btn ghost" data-tab="poslovanje">Podrobno</button></div>
-    ${f.last?`<div class="stats">
-      <div class="stat"><span class="v">${EUR(f.pR)}</span><span class="l">prihodki · ${PCT(f.pPy?f.pR/f.pPy*100:null)} letnega plana</span></div>
-      <div class="stat"><span class="v">${EUR(f.oR)}</span><span class="l">odhodki · ${PCT(f.oPy?f.oR/f.oPy*100:null)} letnega plana</span></div>
-      <div class="stat ${f.zR<0?"bad":"good"}"><span class="v">${EUR(f.zR)}</span><span class="l">poslovni izid</span></div>
-      <div class="stat ${f.pL&&f.pR/f.pL<1?"warn":""}"><span class="v">${f.pL?PCT(f.pR/f.pL*100):"–"}</span><span class="l">indeks prihodkov / lani</span></div>
-      <div class="stat ${tone(sc)}"><span class="v">${PCT(sc)}</span><span class="l">ocena uspešnosti direktorja</span></div></div>${chartGroups(f.period)}`
-    :f.hasPlan?`<p class="small muted">Letni plan je uvožen (prihodki ${EUR(f.pPy)}, odhodki ${EUR(f.oPy)}). Analiza za obdobje še ni uvožena.</p>`
-    :emptyBox("Ni podatkov o poslovanju",`Uvozite Excel z letnim planom in analizami poslovanja za obdobja. Iz njih se izračunajo doseganje plana, indeksi in kazalniki direktorja.`,`<button class="btn primary" data-tab="poslovanje">Uvozi podatke</button>`)}
+  <section class="panel"><div class="panel-head"><h2>Poslovanje ${y}${f.last?` <span class="muted" style="font-family:var(--f-body);font-size:14px;font-weight:400">· jan–${MES[f.last-1]}</span>`:""}</h2><button class="btn ghost" data-tab="poslovanje">Vnos podatkov</button></div>
+    ${f.last||f.hasPlan?`<div class="stats">
+      <div class="stat"><span class="v">${EUR(f.pR)}</span><span class="l">prihodki, realizacija</span></div>
+      <div class="stat ${tone(f.pP?f.pR/f.pP*100:null)}"><span class="v">${PCT(f.pP?f.pR/f.pP*100:null)}</span><span class="l">prihodki glede na plan</span></div>
+      <div class="stat"><span class="v">${EUR(f.zR)}</span><span class="l">poslovni izid, realizacija</span></div>
+      <div class="stat ${f.zP>0?tone(f.zR/f.zP*100):""}"><span class="v">${EUR(f.zR-f.zP)}</span><span class="l">odmik izida od plana</span></div>
+      <div class="stat ${tone(sc)}"><span class="v">${PCT(sc)}</span><span class="l">ocena uspešnosti direktorja</span></div></div>${chartBars(f.rows)}`
+    :emptyBox("Ni podatkov o poslovanju",`Vnesite letni plan po mesecih in mesečno realizacijo prihodkov in odhodkov. Iz njih se izračunajo indeksi in kazalniki direktorja.`,`<button class="btn primary" data-tab="poslovanje">Vnesi plan in realizacijo</button>`)}
   </section>`;
 }
 
@@ -481,7 +491,7 @@ function vSeja(){
     <div class="step"><span class="n">3</span><div><h2>Snemanje seje</h2><p class="small muted">Telefon ali računalnik položite na sredino mize.</p></div></div>
     <div id="recBox">${Rec.html()}</div>
     ${vPosnetki(s.id)}
-    <details class="small"><summary style="cursor:pointer;font-weight:600">Kako dobim prepis posnetka v Wordu</summary>
+    <details class="small"><summary style="cursor:pointer;font-weight:600">Brez Sonioxa: kako dobim prepis posnetka v Wordu</summary>
       <ol style="margin:8px 0 0;padding-left:20px;display:flex;flex-direction:column;gap:4px;max-width:75ch">
         <li>Posnetek naložite v OneDrive (gumb zgoraj). Na računalniku je v mapi <strong>OneDrive – op-bertok → Aplikacije → Nadzorni svet → Posnetki</strong>.</li>
         <li>Na office.com odprite nov Wordov dokument, kliknite <strong>Narekuj → Prepis → Naloži zvok</strong> in izberite posnetek.</li>
@@ -498,9 +508,6 @@ function vSeja(){
 
   <section class="panel">
     <div class="step"><span class="n">5</span><div><h2>Zapisnik</h2><p class="small muted">Claude pripravi osnutek iz prepisa in dnevnega reda, v strukturi in slogu izbranih preteklih zapisnikov. Nejasna mesta označi z [PREVERI].</p></div></div>
-    <details class="small"><summary style="cursor:pointer;font-weight:600">Moja pravila za zapisnik${d.pravila?` (${d.pravila.split(/\n+/).filter(Boolean).length})`:""}</summary>
-      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px"><textarea id="seja-pravila" rows="4" placeholder="Vsako pravilo v svojo vrstico, npr. »Sklepe označi kot Sklep št. 12/3.«">${esc(d.pravila)}</textarea>
-      <div class="row"><button class="btn" data-act="pravila-shrani">Shrani pravila</button><span class="muted">Veljajo za vse zapisnike te družbe.</span></div></div></details>
     ${ui.manual&&ui.manual.kind==="zapisnik"?manualBox():""}
     <div class="fld"><span>Predloge (pretekli zapisniki)</span>
       ${predloge.length?`<div class="checks">${predloge.map(p=>`<label><input type="checkbox" id="pr-${p.id}" data-predloga="${p.id}" ${ui.izbranePredloge.includes(p.id)?"checked":""}>${esc(p.naziv)}</label>`).join("")}</div>`
@@ -508,7 +515,7 @@ function vSeja(){
     <div class="row">
       <button class="btn primary ${busy.zapisnik?"busy":""}" data-act="zapisnik-pripravi" ${busy.zapisnik?"disabled":""}>${busy.zapisnik?"Pišem osnutek ":s.zapisnik?"Pripravi nov osnutek":"Pripravi osnutek zapisnika"}</button>
       ${busy.zapisnik?`<button class="btn" data-act="zapisnik-ustavi">Ustavi</button>`:""}
-      ${s.zapisnik&&!busy.zapisnik?`<button class="btn" data-act="zapisnik-word">Prenesi Word</button><button class="btn ghost" data-act="kopiraj" data-id="f-zapisnik">Kopiraj</button><button class="btn ghost" data-act="zapisnik-predloga">Shrani kot predlogo</button>`:""}</div>
+      ${s.zapisnik&&!busy.zapisnik?`<button class="btn" data-act="zapisnik-word">Prenesi Word</button><button class="btn ghost" data-act="kopiraj" data-id="f-zapisnik">Kopiraj</button>`:""}</div>
     ${s.zapisnik||busy.zapisnik?`<textarea class="doc" id="f-zapisnik" data-f="zapisnik" ${busy.zapisnik?"readonly":""}>${esc(s.zapisnik)}</textarea>`:""}
     ${s.zapisnik&&!busy.zapisnik?`<div class="panel" style="background:var(--sunk);border:0">
       <div class="panel-head"><h3>Sklepi v evidenco</h3><button class="btn ${busy.izlusci?"busy":""}" data-act="sklepi-izlusci" ${busy.izlusci?"disabled":""}>${busy.izlusci?"Iščem sklepe ":"Izlušči sklepe iz zapisnika"}</button></div>
@@ -542,6 +549,114 @@ function sestaviVabilo(){
   return L.join("\n");
 }
 
+/* ---------- SPROTNI PREPIS (Soniox) ----------
+   Med snemanjem se zvok sproti pošilja v Soniox (16 kHz PCM), prepis z oznakami govorcev se izpisuje v korak 4.
+   Ključ je shranjen samo na tej napravi (Nastavitve → Soniox). */
+const SONIOX_URL="wss://stt-rt.soniox.com/transcribe-websocket";
+const Live={on:false,ws:null,ac:null,src:null,proc:null,sejaId:null,base:"",fin:"",nonfin:"",lastSpk:null,legacy:false,opened:false,stopping:false,
+  fatal:false,dead:false,err:"",retries:0,kaT:0,saveT:0,reT:0,done:null,
+  key(){return LS.get("sonioxKey","")},
+  enabled(){return !!this.key()&&LS.get("sonioxOn",true)!==false},
+  text(){const f=this.fin.trim();return (this.base&&f?this.base+"\n\n":this.base)+f},
+  config(){const c={model:LS.get("sonioxModel","stt-rt-v6"),audio_format:"pcm_s16le",sample_rate:16000,num_channels:1,language_hints:["sl"],enable_speaker_diarization:true};
+    if(this.legacy)c.api_key=this.key();return c},
+  open(){return this.legacy?new WebSocket(SONIOX_URL):new WebSocket(SONIOX_URL,["soniox-api-key",this.key()])},
+  start(stream,sejaId){
+    Object.assign(this,{on:true,sejaId,fin:"",nonfin:"",lastSpk:null,err:"",retries:0,stopping:false,fatal:false,dead:false,legacy:LS.get("sonioxLegacy",false)});
+    const prev=(ui.sejaId===sejaId?(ui.prepis||""):((S.prepisi[sejaId]||{}).besedilo||"")).trim();
+    this.base=prev?prev+"\n\n[nadaljevanje snemanja ob "+fmtTime(Date.now())+"]":"";
+    const AC=window.AudioContext||window.webkitAudioContext;
+    this.ac=new AC();this.src=this.ac.createMediaStreamSource(stream);this.proc=this.ac.createScriptProcessor(4096,1,1);
+    const ratio=this.ac.sampleRate/16000;
+    this.proc.onaudioprocess=e=>{
+      if(!this.ws||this.ws.readyState!==1||!this.opened||Rec.paused)return;
+      const inp=e.inputBuffer.getChannelData(0),n=Math.floor(inp.length/ratio),out=new Int16Array(n);
+      for(let i=0;i<n;i++){const a=Math.floor(i*ratio),b=Math.max(a+1,Math.min(inp.length,Math.floor((i+1)*ratio)));let s=0;for(let j=a;j<b;j++)s+=inp[j];
+        const v=Math.max(-1,Math.min(1,s/(b-a)));out[i]=v<0?v*0x8000:v*0x7fff}
+      try{this.ws.send(out.buffer)}catch(err){}
+    };
+    const mute=this.ac.createGain();mute.gain.value=0;this.src.connect(this.proc);this.proc.connect(mute);mute.connect(this.ac.destination);
+    if(this.ac.state==="suspended")this.ac.resume().catch(()=>{});
+    this.connect();
+    this.kaT=setInterval(()=>{if(this.ws&&this.ws.readyState===1&&this.opened&&Rec.paused)try{this.ws.send(JSON.stringify({type:"keepalive"}))}catch(e){}},8000);
+    this.saveT=setInterval(()=>this.save(),20000);
+  },
+  connect(){
+    this.opened=false;this.fatal=false;let ws;
+    try{ws=this.open()}catch(e){if(!this.legacy){this.legacy=true;return this.connect()}return this.fail("Povezava s Sonioxom ni mogoča.")}
+    this.ws=ws;
+    ws.onopen=()=>{try{ws.send(JSON.stringify(this.config()))}catch(e){}this.opened=true;this.err="";this.paint()};
+    ws.onmessage=ev=>{let r;try{r=JSON.parse(ev.data)}catch(e){return}
+      if(r.error_code||r.error_message){this.err=String(r.error_message||r.error_code);this.fatal=/^40[0-3]$/.test(String(r.error_code))||/key|auth|unauthori|forbidden|balance|credit|quota/i.test(this.err);return}
+      if(Array.isArray(r.tokens)){let nf="";for(const t of r.tokens){if(!t||typeof t.text!=="string"||/^<(end|fin)>$/.test(t.text))continue;if(t.is_final)this.add(t);else nf+=t.text}this.nonfin=nf;this.paint()}
+      if(r.finished&&this.done)this.done();
+    };
+    ws.onclose=()=>{
+      const wasOpen=this.opened;this.opened=false;if(this.ws!==ws)return;this.ws=null;
+      if(this.stopping){this.done&&this.done();return}
+      if(!this.on)return;
+      if(!wasOpen&&!this.legacy&&!this.err){this.legacy=true;return this.connect()} // brskalnik/strežnik ni sprejel ključa v protokolu – pošljemo ga v prvem sporočilu
+      if(this.fatal)return this.fail("Soniox je zavrnil prepis ("+this.err+"). Preverite ključ in dobroimetje v Nastavitvah. Snemanje teče naprej.");
+      if(this.retries++<30){this.err="Povezava s Sonioxom je prekinjena – ponovno povezujem …";this.fin=this.fin.replace(/\s+$/,"")+"\n\n[prekinitev prepisa ob "+fmtTime(Date.now())+"]";this.lastSpk=null;this.paint();
+        this.reT=setTimeout(()=>{if(this.on&&!this.stopping)this.connect()},Math.min(15000,1500*this.retries));}
+      else this.fail("Povezave s Sonioxom ni mogoče vzpostaviti. Snemanje teče naprej; prepis lahko naredite kasneje iz posnetka.");
+    };
+    ws.onerror=()=>{};
+  },
+  add(t){
+    let tx=t.text;const sp=t.speaker!=null&&t.speaker!==""?String(t.speaker):null;
+    if(sp!==null&&sp!==this.lastSpk){this.fin=this.fin.replace(/\s+$/,"")+(this.fin?"\n\n":"")+"Govorec "+sp+": ";this.lastSpk=sp;tx=tx.replace(/^\s+/,"")}
+    this.fin+=tx;
+  },
+  state(){
+    if(this.dead)return `<span style="color:var(--bad)">${esc(this.err)}</span>`;
+    if(this.err)return `<span style="color:var(--warn)">${esc(this.err)}</span>`;
+    if(!this.opened)return "Povezujem s Sonioxom …";
+    return Rec.paused?"Sprotni prepis: premor":"Sprotni prepis teče (Soniox)";
+  },
+  paint(){
+    const s=$("#liveState");if(s)s.innerHTML=this.state();
+    const b=$("#liveTxt");if(b){const f=this.fin.trim();const tail=f.length>1600?"…"+f.slice(-1600):f;
+      b.innerHTML=(tail?esc(tail):`<span class="muted">Besedilo se bo izpisovalo, ko bo kdo spregovoril …</span>`)+(this.nonfin?`<span class="muted">${esc(this.nonfin)}</span>`:"");b.scrollTop=b.scrollHeight}
+    if(ui.sejaId===this.sejaId){ui.prepis=this.text();const ta=$("#prepis");if(ta){ta.readOnly=true;if(document.activeElement!==ta)ta.value=ui.prepis}updateDirty()}
+  },
+  save(){
+    if(!this.sejaId)return;const t=this.text();if(!t.trim())return;
+    if(((S.prepisi[this.sejaId]||{}).besedilo||"")===t)return;
+    write("prepisi/"+this.sejaId,{besedilo:t,posodobljeno:new Date().toISOString(),vir:"soniox"});
+    if(ui.sejaId===this.sejaId){ui.prepis=t;ui.prepisSaved=t;updateDirty()}
+  },
+  fail(msg){this.err=msg;this.dead=true;toast(msg,9000);this.paint()},
+  async stop(){
+    if(!this.on)return;this.stopping=true;
+    clearInterval(this.kaT);clearInterval(this.saveT);clearTimeout(this.reT);
+    try{this.proc&&this.proc.disconnect();this.src&&this.src.disconnect()}catch(e){}
+    const ws=this.ws;
+    if(ws&&ws.readyState===1&&this.opened){await new Promise(res=>{this.done=res;try{ws.send("")}catch(e){res()}setTimeout(res,8000)})}
+    try{ws&&ws.close()}catch(e){}
+    try{this.ac&&this.ac.close()}catch(e){}
+    if(this.legacy)LS.set("sonioxLegacy",true);
+    this.nonfin="";this.save();
+    const n=this.fin.trim().length;
+    this.on=false;this.ws=null;this.done=null;this.ac=null;this.src=null;this.proc=null;
+    if(n)toast("Prepis je shranjen v korak 4 ("+NUM.format(n)+" znakov).",5000);
+  },
+  test(){ // kratek preizkus ključa: odpre sejo, pošlje pol sekunde tišine in jo zaključi
+    return new Promise((res,rej)=>{
+      const key=this.key();if(!key)return rej(new Error("Vpišite ključ."));
+      let settled=false,legacy=LS.get("sonioxLegacy",false);
+      const go=()=>{let opened=false,err="";const ws=legacy?new WebSocket(SONIOX_URL):new WebSocket(SONIOX_URL,["soniox-api-key",key]);
+        const fin=(ok,m)=>{if(settled)return;settled=true;try{ws.close()}catch(e){}ok?res():rej(new Error(m))};
+        ws.onopen=()=>{opened=true;const c={model:LS.get("sonioxModel","stt-rt-v6"),audio_format:"pcm_s16le",sample_rate:16000,num_channels:1,language_hints:["sl"]};if(legacy)c.api_key=key;
+          ws.send(JSON.stringify(c));ws.send(new Int16Array(8000).buffer);ws.send("")};
+        ws.onmessage=ev=>{let r={};try{r=JSON.parse(ev.data)}catch(e){}if(r.error_code||r.error_message){err=String(r.error_message||r.error_code);fin(false,err)}else if(r.finished)fin(true)};
+        ws.onclose=()=>{if(settled)return;if(!opened&&!legacy){legacy=true;LS.set("sonioxLegacy",true);go();return}fin(false,err||"Povezava ni uspela.")};
+        setTimeout(()=>fin(false,"Soniox se ni odzval."),15000)};
+      go();
+    });
+  }
+};
+
 /* ---------- SNEMANJE ---------- */
 const Rec={active:false,paused:false,mr:null,stream:null,id:null,sejaId:null,n:0,mime:"",t0:0,acc:0,raf:0,an:null,ac:null,wake:null,local:new Set(),level:0,
   supported(){return !!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&window.MediaRecorder)},
@@ -550,12 +665,15 @@ const Rec={active:false,paused:false,mr:null,stream:null,id:null,sejaId:null,n:0
     if(!this.supported())return `<div class="note warn">Ta brskalnik ne podpira snemanja. Uporabite Safari na iPhonu ali Edge/Chrome na računalniku.</div>`;
     if(this.active&&this.sejaId!==ui.sejaId)return `<div class="note warn">Snemanje teče pri drugi seji.</div>`;
     if(!this.active)return `<div class="rec"><div class="row"><button class="btn rec-btn" data-act="rec-start">● Začni snemanje</button></div>
+      ${Live.enabled()?`<p class="small"><span class="chip good">Sprotni prepis vklopljen</span> Med snemanjem Soniox sproti piše prepis z oznakami govorcev v korak 4; ko ustavite, je prepis že shranjen.</p>`
+        :`<p class="small muted">Sprotni prepis ni vklopljen. Če v <button class="btn ghost small" data-tab="nastavitve">Nastavitvah</button> vpišete ključ Soniox, se bo prepis pisal sam med snemanjem.</p>`}
       <p class="small muted">Med snemanjem ne zaklepajte telefona in ne preklapljajte v druge aplikacije, ker se snemanje ustavi. Zaslon ostane prižgan sam. Posnetek se sproti shranjuje na napravo, zato se ob prekinitvi ohrani vse do tistega trenutka.</p></div>`;
     return `<div class="rec ${this.paused?"":"live"}"><div class="row" style="gap:14px">${this.paused?`<span class="chip warn">Premor</span>`:`<span class="recdot" aria-hidden="true"></span>`}<span class="time" id="recTime">${fmtDur(this.elapsed())}</span></div>
       <div class="level" aria-hidden="true"><b id="recLevel"></b></div>
-      <div class="row">${this.paused?`<button class="btn" data-act="rec-resume">Nadaljuj</button>`:`<button class="btn" data-act="rec-pause">Premor</button>`}<button class="btn primary" data-act="rec-stop">Ustavi in shrani</button></div></div>`;
+      <div class="row">${this.paused?`<button class="btn" data-act="rec-resume">Nadaljuj</button>`:`<button class="btn" data-act="rec-pause">Premor</button>`}<button class="btn primary" data-act="rec-stop">Ustavi in shrani</button></div>
+      ${Live.on?`<div class="livebox"><div class="small" id="liveState">${Live.state()}</div><div class="livetxt" id="liveTxt" aria-live="polite"></div></div>`:""}</div>`;
   },
-  paint(){const b=$("#recBox");if(b&&ui.tab==="seje")b.innerHTML=this.html()},
+  paint(){const b=$("#recBox");if(b&&ui.tab==="seje"){b.innerHTML=this.html();if(Live.on)Live.paint()}},
   async start(){
     if(this.active)return;
     try{this.stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})}
@@ -569,6 +687,7 @@ const Rec={active:false,paused:false,mr:null,stream:null,id:null,sejaId:null,n:0
     this.mr.onstop=()=>this.finish();
     this.stream.getAudioTracks().forEach(t=>t.onended=()=>{if(this.active){toast("Snemanje se je ustavilo (mikrofon ni več na voljo). Posnetek do tega trenutka je shranjen.",7000);this.stop()}});
     this.mr.start(5000);
+    if(Live.enabled()){try{Live.start(this.stream,this.sejaId)}catch(e){toast("Sprotni prepis se ni zagnal: "+(e.message||e),7000)}}
     try{this.ac=new (window.AudioContext||window.webkitAudioContext)();const src=this.ac.createMediaStreamSource(this.stream);this.an=this.ac.createAnalyser();this.an.fftSize=512;src.connect(this.an);this.meter()}catch(e){}
     this.lock();this.paint();
   },
@@ -580,6 +699,7 @@ const Rec={active:false,paused:false,mr:null,stream:null,id:null,sejaId:null,n:0
   stop(){if(!this.active||!this.mr)return;if(!this.paused)this.acc+=Date.now()-this.t0;this.paused=true;try{this.mr.stop()}catch(e){this.finish()}},
   async finish(){
     const id=this.id,sejaId=this.sejaId,mime=this.mime,dur=this.acc;
+    if(Live.on)await Live.stop().catch(()=>{});
     this.active=false;cancelAnimationFrame(this.raf);try{this.stream.getTracks().forEach(t=>t.stop())}catch(e){}try{this.ac&&this.ac.close()}catch(e){}try{this.wake&&this.wake.release()}catch(e){}
     this.mr=null;this.stream=null;
     await new Promise(r=>setTimeout(r,300)); await Promise.all(this.pend||[]); // počakaj zadnji kos
@@ -627,10 +747,11 @@ async function pripraviZapisnik(){
 
 Pravila:
 - ${pred.length?"Natančno posnemaj strukturo, oblikovanje glave, ustaljene formulacije, način oštevilčenja sklepov in zaključek iz priloženih preteklih zapisnikov (predlog). Iz predlog ne prepisuj vsebine, ki ne velja za to sejo.":"Uporabi običajno strukturo zapisnika seje nadzornega sveta d.o.o.: glava, prisotni, ugotovitev sklepčnosti, potrditev dnevnega reda, obravnava po točkah s povzetkom razprave in sklepi, zaključek, podpisa (zapisnikar, predsednica)."}
+- V prepisu so govorci lahko označeni kot »Govorec 1«, »Govorec 2« … Kdo je kdo, ugotovi iz vsebine (nagovori, predstavitve, vloga v razpravi); kjer ni jasno, zapiši [PREVERI: govorec].
 - Vsebino povzemi izključno iz prepisa. Razpravo povzemi jedrnato in stvarno, v tretji osebi, brez dobesednih navedb, razen kjer je pomembno.
 - Sklepe zapiši natančno, kot so bili sprejeti, vsakega z izidom glasovanja (npr. "Sklep je bil sprejet soglasno." ali s številom glasov ZA/PROTI), oštevilči jih tako kot v predlogah.
 - Nič si ne izmišljuj. Kjer prepis ni jasen (ime, številka, izid glasovanja, rok), zapiši [PREVERI: kaj je treba preveriti].
-${d.pravila?"- Upoštevaj tudi ta pravila predsednice NS (imajo prednost pred predlogami):\n"+d.pravila.split(/\n+/).filter(Boolean).map(x=>"  • "+x.trim()).join("\n")+"\n":""}- Piši v knjižni slovenščini. Vrni samo besedilo zapisnika kot navadno besedilo, brez markdown oznak (brez #, ** ali tabel). Naslove razdelkov piši z VELIKIMI ČRKAMI v svoji vrstici.
+- Piši v knjižni slovenščini. Vrni samo besedilo zapisnika kot navadno besedilo, brez markdown oznak (brez #, ** ali tabel). Naslove razdelkov piši z VELIKIMI ČRKAMI v svoji vrstici.
 
 Podatki o seji:
 - Datum: ${fmtDateLong(s.datum)}${s.ura?", začetek ob "+s.ura:""}
@@ -684,12 +805,12 @@ ${s.zapisnik.slice(0,120000)}
 }
 
 function manualBox(){
-  const m=ui.manual;const what={zapisnik:"osnutek zapisnika",sklepi:"seznam sklepov",dir:"poročilo",fin:"podatki iz dokumenta"}[m.kind];
+  const m=ui.manual;const what={zapisnik:"osnutek zapisnika",sklepi:"seznam sklepov",dir:"poročilo"}[m.kind];
   return `<div class="panel" id="manualBox" style="background:var(--accent-soft);border:0">
     <h3>Pripravi s Claudom v vaši aplikaciji Claude</h3>
     <ol class="small" style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:3px">
       <li>Kliknite <strong>Kopiraj navodilo</strong>.</li>
-      <li>Odprite aplikacijo Claude, začnite nov pogovor in navodilo prilepite.${m.kind==="fin"?` V isti pogovor priložite dokument <strong>${esc(m.file||"")}</strong>.`:""}</li>
+      <li>Odprite aplikacijo Claude, začnite nov pogovor in navodilo prilepite.</li>
       <li>Ko Claude konča, kopirajte njegov odgovor in ga prilepite spodaj.</li></ol>
     <div class="row"><button class="btn primary" data-act="manual-kopiraj">Kopiraj navodilo</button><a class="btn" href="https://claude.ai/new" target="_blank" rel="noopener">Odpri Claude</a><span class="small muted">${NUM.format(m.prompt.length)} znakov</span></div>
     <textarea id="manualPrompt" readonly hidden>${esc(m.prompt)}</textarea>
@@ -701,7 +822,6 @@ function manualApply(){
   const m=ui.manual;const t=(($("#manualRes")||{}).value||"").trim();if(!t){toast("Najprej prilepite odgovor Claude.");return}
   if(m.kind==="zapisnik"){ui.draft.zapisnik=t.replace(/^#+\s*/gm,"").replace(/\*\*/g,"");ui.manual=null;render();toast("Osnutek je vstavljen. Preglejte ga in shranite sejo.");return}
   if(m.kind==="dir"){ui.dirPorocilo=t.replace(/\*\*/g,"");ui.manual=null;render();return}
-  if(m.kind==="fin"){const mm=t.match(/\{[\s\S]*\}/);let j;try{j=JSON.parse(mm?mm[0]:t)}catch(e){toast("Odgovora ni bilo mogoče prebrati. Kopirajte celoten odgovor Claude.");return}const op=m.open;ui.manual=null;op(j);return}
   if(m.kind==="sklepi"){const mm=t.match(/[\[{][\s\S]*[\]}]/);let arr;try{arr=JSON.parse(mm?mm[0]:t)}catch(e){toast("Odgovora ni bilo mogoče prebrati. Kopirajte celoten odgovor Claude.");return}
     const s=ui.draft;ui.izlusceni=(Array.isArray(arr)?arr:[]).filter(k=>k&&k.besedilo).map(k=>({oznaka:String(k.oznaka||""),besedilo:String(k.besedilo),zadolzen:String(k.zadolzen||""),rok:/^\d{4}-\d{2}-\d{2}$/.test(k.rok||"")?k.rok:"",sel:!S.sklepi.some(x=>x.sejaId===s.id&&x.besedilo===k.besedilo)}));
     ui.manual=null;render()}
@@ -778,188 +898,46 @@ function sklepiWord(){
 /* ---------- POSLOVANJE ---------- */
 function letaSel(){const y0=new Date().getFullYear();const ys=new Set([y0-1,y0,y0+1,...Object.keys(S.finance).map(Number),...Object.keys(S.direktor).map(Number)]);
   return `<label class="fld" style="flex-direction:row;align-items:center;gap:8px">Leto<select id="leto" style="width:auto">${[...ys].filter(Boolean).sort().map(y=>`<option ${y===ui.leto?"selected":""}>${y}</option>`).join("")}</select></label>`}
-const fdPath=(c,y)=>`${c}/${S.druzbaId}_${y}`;
-function sejaLabel(id){const s=S.seje.find(x=>x.id===id);return s?`${s.stevilka}. seja (${fmtDate(s.datum)})`:""}
-function pctCell(v,exp,lowerBetter){ // v = % letnega plana, exp = pričakovani delež
-  if(v==null||!isFinite(v))return `<td class="r num muted">–</td>`;
-  let c="";if(exp!=null){const d=v-exp;c=lowerBetter?(d>10?"bad":d>3?"warn":""):(d<-10?"bad":d<-3?"warn":"good")}
-  return `<td class="r num" style="${c?`color:var(--${c});font-weight:600`:""}">${PCT(v)}</td>`;
-}
-function idxCell(a,b,lowerBetter){if(a==null||!b)return `<td class="r num muted">–</td>`;const v=a/b*100;const c=lowerBetter?(v>110?"warn":""):(v<95?"warn":v>=100?"good":"");return `<td class="r num" style="${c?`color:var(--${c})`:""}">${PCT(v)}</td>`}
-function summaryRows(rows){return (rows||[]).filter(r=>r.tip==="s"||r.sek==="p"||/amortizacij/i.test(r.naziv))}
 function vPoslovanje(){
-  const y=ui.leto,F=finDoc(y),per=finPeriods(y),f=finSum(y,ui.obd||undefined);
-  const P=f.period;const exp=P?P.do/12*100:null;const all=ui.finVse;
-  const imp=ui.imp?vImport():"";
-  const head=`<section class="panel"><div class="panel-head"><h2>Poslovanje ${y}</h2><div class="row">${letaSel()}
-      <label class="btn primary" for="finFile">Uvozi iz Excela</label><input type="file" id="finFile" accept=".xlsx,.xls,.xlsm" hidden>
-      <label class="btn" for="finDocFile">Uvozi iz PDF/Word</label><input type="file" id="finDocFile" accept=".pdf,.docx" hidden>
-      <button class="btn ghost" data-act="fin-rocno">Vnesi ročno</button></div></div>
-    <p class="lede">Letni plan po postavkah in analize poslovanja za obdobja (npr. januar–junij), kot jih dobite na sejah. Excel se uvozi neposredno, PDF ali Word pa prebere Claude. Pred uvozom vidite predogled.</p>
-    ${ui.manual&&ui.manual.kind==="fin"?manualBox():""}${imp}${ui.finRocno?vRocno():""}
-    <div class="row small">${F&&F.plan?`<span class="chip good">Letni plan ${y} uvožen</span>${F.plan.vir?`<span class="muted">${esc(F.plan.vir)}${F.plan.sejaId?" · "+esc(sejaLabel(F.plan.sejaId)):""}</span>`:""}
-        <button class="btn ghost small ${ui.confirm==="fp"?"danger armed":""}" data-act="fin-plan-brisi">${ui.confirm==="fp"?"Potrdite izbris plana":"Izbriši plan"}</button>`:`<span class="chip">Letni plan ${y} ni uvožen</span>`}</div>
-    ${per.length?`<div class="row">${per.map(p=>`<button class="btn ${P&&P.do===p.do?"primary":""}" data-act="fin-obd" data-id="${p.do}">${OBD_IME(p.do)}</button>`).join("")}</div>`:""}
-  </section>`;
-  if(!F||(!F.plan&&!per.length))return head+`<section class="panel">${emptyBox("Za leto "+y+" še ni podatkov","Uvozite Excel z letnim planom ali z analizo poslovanja za obdobje (npr. »ANALIZA POSLOVANJA ZA JANUAR – JUNIJ«). Iz ene datoteke lahko uvozite več listov.","")}</section>`;
-  let body="";
-  if(P){
-    const rows=all?P.rows:summaryRows(P.rows);
-    body+=`<section class="panel"><div class="panel-head"><h2>${esc(OBD_IME(P.do))} ${y}</h2><div class="row">
-        <button class="btn" data-act="fin-word">Poročilo (Word)</button>
-        <button class="btn ghost danger ${ui.confirm==="fo-"+P.do?"armed":""}" data-act="fin-obd-brisi" data-id="${P.do}">${ui.confirm==="fo-"+P.do?"Potrdite izbris":"Izbriši obdobje"}</button></div></div>
-      <p class="small muted">${esc(P.vir||"")}${P.sejaId?" · obravnavano na "+esc(sejaLabel(P.sejaId)):""} · Pričakovani delež letnega plana za ${P.do} ${P.do===1?"mesec":P.do<5?"mesece":"mesecev"}: ${PCT(exp)}</p>
-      <div class="stats">
-        <div class="stat"><span class="v">${EUR(f.pR)}</span><span class="l">prihodki · ${PCT(f.pPy?f.pR/f.pPy*100:null)} letnega plana</span></div>
-        <div class="stat"><span class="v">${EUR(f.oR)}</span><span class="l">odhodki · ${PCT(f.oPy?f.oR/f.oPy*100:null)} letnega plana</span></div>
-        <div class="stat ${f.zR!=null&&f.zR<0?"bad":"good"}"><span class="v">${EUR(f.zR)}</span><span class="l">poslovni izid${f.zP!=null?" · plan za obdobje "+EUR(f.zP):""}</span></div>
-        <div class="stat ${f.pL&&f.pR/f.pL<1?"warn":""}"><span class="v">${f.pL?PCT(f.pR/f.pL*100):"–"}</span><span class="l">indeks prihodkov glede na lani</span></div>
-      </div>
-      ${chartGroups(P)}
-      ${odstopanja(P)}
-      <div class="row" style="justify-content:space-between"><h3>Po postavkah</h3><button class="btn ghost" data-act="fin-vse">${all?"Pokaži samo skupine":"Pokaži vse postavke"}</button></div>
-      <div class="tablewrap"><table><thead><tr><th>Postavka</th><th class="r">Letni plan</th><th class="r">Realizacija</th><th class="r">% plana</th><th class="r">Isto obdobje lani</th><th class="r">Indeks</th></tr></thead><tbody>
-      ${rows.map(r=>{const lb=r.sek==="o";const v=r.plan?r.real/r.plan*100:null;const b=r.tip!=="p";
-        return `<tr${b?` style="font-weight:600;background:var(--sunk)"`:""}><td>${esc(r.naziv)}</td><td class="r num">${EUR(r.plan)}</td><td class="r num">${EUR(r.real)}</td>${r.real!=null?pctCell(v,exp,lb):`<td class="r num muted">–</td>`}<td class="r num">${EUR(r.lani)}</td>${idxCell(r.real,r.lani,lb)}</tr>`}).join("")}
-      </tbody></table></div>
-      <p class="small muted">Barve: pri odhodkih rdeče pomeni porabo nad pričakovanim deležem letnega plana, pri prihodkih zaostanek za njim.</p>
-    </section>`;
-    if(per.length>1)body+=`<section class="panel"><h3>Po obdobjih ${y}</h3><div class="tablewrap"><table><thead><tr><th>Obdobje</th><th class="r">Prihodki</th><th class="r">Odhodki</th><th class="r">Poslovni izid</th><th class="r">% plana prihodkov</th><th class="r">Indeks prihodkov / lani</th></tr></thead><tbody>
-      ${per.map(p=>{const s=finSum(y,p.do);return `<tr><td>${OBD_IME(p.do)}</td><td class="r num">${EUR(s.pR)}</td><td class="r num">${EUR(s.oR)}</td><td class="r num" style="${s.zR<0?"color:var(--bad)":""}">${EUR(s.zR)}</td>${pctCell(s.pPy?s.pR/s.pPy*100:null,p.do/12*100,false)}${idxCell(s.pR,s.pL,false)}</tr>`}).join("")}</tbody></table></div></section>`;
-  }
-  if(F&&F.plan){
-    const rows=ui.planVse?F.plan.rows:summaryRows(F.plan.rows);const t=rowTotals(F.plan.rows,"plan"),tl=rowTotals(F.plan.rows,"lani");
-    body+=`<section class="panel"><div class="panel-head"><h2>Letni plan ${y}</h2><button class="btn ghost" data-act="plan-vse">${ui.planVse?"Pokaži samo skupine":"Pokaži vse postavke"}</button></div>
-      <div class="stats"><div class="stat"><span class="v">${EUR(t.p)}</span><span class="l">načrtovani prihodki</span></div><div class="stat"><span class="v">${EUR(t.o)}</span><span class="l">načrtovani odhodki</span></div>
-        <div class="stat ${t.z<0?"bad":"good"}"><span class="v">${EUR(t.z)}</span><span class="l">načrtovani izid</span></div><div class="stat"><span class="v">${tl.p?PCT(t.p/tl.p*100):"–"}</span><span class="l">plan prihodkov / realizacija lani</span></div></div>
-      <div class="tablewrap"><table><thead><tr><th>Postavka</th><th class="r">Plan ${y}</th><th class="r">Plan ${y-1}</th><th class="r">Realizacija ${y-1}</th><th class="r">Plan / real. lani</th></tr></thead><tbody>
-      ${rows.map(r=>`<tr${r.tip!=="p"?` style="font-weight:600;background:var(--sunk)"`:""}><td>${esc(r.naziv)}</td><td class="r num">${EUR(r.plan)}</td><td class="r num">${EUR(r.planLani)}</td><td class="r num">${EUR(r.lani)}</td>${idxCell(r.plan,r.lani,r.sek==="o")}</tr>`).join("")}
-      </tbody></table></div></section>`;
-  }
-  return head+body;
+  const y=ui.leto,f=finSum(y),rows=f.rows;
+  const idx=(r,p)=>r!=null&&p?PCT(r/p*100):"–";
+  const inp=(m,k,v)=>`<input type="text" inputmode="decimal" id="fin-${m}-${k}" data-m="${m}" data-k="${k}" value="${esc(fmtIn(v))}" aria-label="${MESF[m-1]} ${k}">`;
+  return `<section class="panel"><div class="panel-head"><h2>Plan in realizacija ${y}</h2><div class="row">${letaSel()}<button class="btn" data-act="fin-word">Poročilo (Word)</button></div></div>
+    <p class="lede">Zneski v EUR brez centov. Vnesite letni plan po mesecih in sproti mesečno realizacijo; poslovni izid je razlika med prihodki in odhodki. Podatke lahko prilepite tudi iz Excela.</p>
+    ${f.last?`<div class="stats">
+      <div class="stat"><span class="v">${EUR(f.pR)}</span><span class="l">prihodki jan–${MES[f.last-1]}</span></div>
+      <div class="stat ${tone(f.pP?f.pR/f.pP*100:null)}"><span class="v">${idx(f.pR,f.pP)}</span><span class="l">indeks prihodkov real./plan</span></div>
+      <div class="stat"><span class="v">${EUR(f.zR)}</span><span class="l">poslovni izid jan–${MES[f.last-1]}</span></div>
+      <div class="stat ${f.zP>0?tone(f.zR/f.zP*100):""}"><span class="v">${f.zP>0?idx(f.zR,f.zP):EUR(f.zR-f.zP)}</span><span class="l">${f.zP>0?"indeks izida real./plan":"odmik izida od plana"}</span></div>
+      <div class="stat"><span class="v">${f.pPy?PCT(f.pR/f.pPy*100):"–"}</span><span class="l">dosežek letnega plana prihodkov</span></div></div>`:""}
+    <div class="tablewrap"><table class="fin"><thead><tr><th>Mesec</th><th class="r">Prihodki plan</th><th class="r">Prihodki real.</th><th class="r">Indeks</th><th class="r">Odhodki plan</th><th class="r">Odhodki real.</th><th class="r">Izid plan</th><th class="r">Izid real.</th></tr></thead>
+    <tbody>${rows.map(r=>{const zP=r.pP!=null||r.oP!=null?(r.pP||0)-(r.oP||0):null,zR=r.pR!=null||r.oR!=null?(r.pR||0)-(r.oR||0):null;
+      return `<tr><td>${MESF[r.m-1]}</td><td>${inp(r.m,"pP",r.pP)}</td><td>${inp(r.m,"pR",r.pR)}</td><td class="r num ${r.pR!=null&&r.pP?"":"muted"}" style="color:${r.pR!=null&&r.pP?`var(--${tone(r.pR/r.pP*100)})`:""}">${idx(r.pR,r.pP)}</td><td>${inp(r.m,"oP",r.oP)}</td><td>${inp(r.m,"oR",r.oR)}</td><td class="r num">${zP==null?"–":EUR(zP)}</td><td class="r num" style="${zR!=null&&zR<0?"color:var(--bad)":""}">${zR==null?"–":EUR(zR)}</td></tr>`}).join("")}</tbody>
+    <tfoot><tr><td>Leto</td><td class="r num">${EUR(f.pPy)}</td><td class="r num">${EUR(sum(rows,"pR"))}</td><td class="r num">${f.last?idx(f.pR,f.pP):"–"}</td><td class="r num">${EUR(f.oPy)}</td><td class="r num">${EUR(sum(rows,"oR"))}</td><td class="r num">${EUR(f.zPy)}</td><td class="r num">${EUR(f.zR)}</td></tr></tfoot></table></div>
+    <p class="small muted">Indeks v vrstici »Leto« primerja realizacijo s planom za isto obdobje (jan–zadnji mesec z realizacijo).</p>
+  </section>
+  <div class="grid2"><section class="panel"><h3>Prihodki po mesecih</h3>${chartBars(rows)}</section><section class="panel"><h3>Kumulativni poslovni izid</h3>${chartCum(rows)}</section></div>
+  <section class="panel"><h3>Prilepi iz Excela</h3><p class="small muted">Kopirajte 12 vrstic (januar–december) s štirimi stolpci v tem vrstnem redu: prihodki plan, prihodki realizacija, odhodki plan, odhodki realizacija. Prvi stolpec z imenom meseca se preskoči. Prazne celice ostanejo nespremenjene.</p>
+    <textarea id="finPaste" rows="4" placeholder="Prilepite celice iz Excela …"></textarea><div class="row"><button class="btn" data-act="fin-uvozi">Uvozi v leto ${y}</button></div></section>`;
 }
-function chartGroups(P){
-  const g=(P.rows||[]).filter(r=>r.plan>0&&r.real!=null&&(r.tip==="s"||/amortizacij/i.test(r.naziv)));if(!g.length)return "";
-  const exp=P.do/12*100,W=680,lh=30,pl=200,pr=60,H=g.length*lh+30,max=Math.max(120,...g.map(r=>r.real/r.plan*100))*1.02,X=v=>pl+(W-pl-pr)*v/max;
-  let s=`<line class="grid" x1="${X(exp)}" x2="${X(exp)}" y1="4" y2="${H-20}" stroke-dasharray="4 3" style="stroke:var(--muted)"/><text x="${X(exp)}" y="${H-6}" text-anchor="middle">pričakovano ${Math.round(exp)} %</text>`;
-  g.forEach((r,i)=>{const v=r.real/r.plan*100,y=8+i*lh,lb=r.sek==="o",d=v-exp,c=lb?(d>10?"var(--bad)":d>3?"var(--warn)":"var(--accent)"):(d<-10?"var(--bad)":d<-3?"var(--warn)":"var(--good)");
-    s+=`<text x="${pl-8}" y="${y+14}" text-anchor="end">${esc(trunc(r.naziv,30))}</text><rect x="${pl}" y="${y+3}" width="${Math.max(1,X(v)-pl)}" height="16" rx="2" style="fill:${c}"><title>${esc(r.naziv)}: ${PCT(v)} letnega plana</title></rect><text x="${X(v)+6}" y="${y+15}">${Math.round(v)} %</text>`});
-  return `<h3>Doseganje letnega plana</h3><div style="overflow-x:auto"><svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Doseganje letnega plana po skupinah" style="min-width:520px">${s}</svg></div>`;
+const fdPath=(c,y)=>`${c}/${S.druzbaId}_${y}`;
+function finSet(y,m,k,v){const key=String(y);const doc=strip(S.finance[key]||{m:{}});doc.leto=+y;doc.druzbaId=S.druzbaId;doc.m=doc.m||{};doc.m[m]=doc.m[m]||{};if(v==null)delete doc.m[m][k];else doc.m[m][k]=v;write(fdPath("finance",y),doc)}
+function finUvozi(){
+  const t=($("#finPaste")||{}).value||"";const lines=t.split(/\r?\n/).filter(l=>l.trim());if(!lines.length){toast("Ni prilepljenih podatkov.");return}
+  const key=String(ui.leto);const doc=strip(S.finance[key]||{m:{}});doc.leto=ui.leto;doc.druzbaId=S.druzbaId;doc.m=doc.m||{};let n=0;
+  lines.slice(0,12).forEach((l,i)=>{let c=l.split("\t");if(c.length===1)c=l.split(";");if(c.length>=5||(c.length&&parseNum(c[0])==null&&c[0].trim()))c=c.slice(1);
+    ["pP","pR","oP","oR"].forEach((k,j)=>{const v=parseNum(c[j]);if(v!=null){doc.m[i+1]=doc.m[i+1]||{};doc.m[i+1][k]=v;n++}})});
+  if(n)write(fdPath("finance",ui.leto),doc);
+  toast(n?`Uvoženih ${n} vrednosti.`:"Ni najdenih številk – preverite obliko.");render();
 }
-function odstopanja(P){
-  const exp=P.do/12;const l=(P.rows||[]).filter(r=>r.tip==="p"&&r.sek==="o"&&r.plan>0&&r.real!=null).map(r=>({r,pre:r.real-r.plan*exp})).filter(x=>x.pre>0&&x.r.real/x.r.plan>exp*1.15).sort((a,b)=>b.pre-a.pre).slice(0,6);
-  if(!l.length)return "";
-  return `<div class="note warn"><strong>Večja odstopanja pri odhodkih</strong> (poraba nad pričakovanim deležem letnega plana):<ul style="margin:6px 0 0;padding-left:20px">${l.map(x=>`<li>${esc(x.r.naziv)}: ${EUR(x.r.real)} = ${PCT(x.r.real/x.r.plan*100)} letnega plana (${EUR(x.pre)} nad pričakovanim)</li>`).join("")}</ul></div>`;
-}
-function vRocno(){
-  const r=ui.finRocno;
-  return `<div class="panel" style="background:var(--sunk);border:0"><h3>Ročni vnos obdobja</h3>
-    <div class="fields"><label class="fld">Leto<input type="text" inputmode="numeric" id="fr-leto" value="${esc(r.leto)}"></label>
-      <label class="fld">Obdobje<select id="fr-do">${[3,6,9,12,1,2,4,5,7,8,10,11].map(m=>`<option value="${m}" ${+r.do===m?"selected":""}>${OBD_IME(m)}</option>`).join("")}</select></label></div>
-    <div class="fields"><label class="fld">Prihodki – realizacija<input type="text" inputmode="decimal" id="fr-pr"></label><label class="fld">Prihodki – isto obdobje lani<input type="text" inputmode="decimal" id="fr-pl"></label><label class="fld">Prihodki – letni plan<input type="text" inputmode="decimal" id="fr-pp"></label></div>
-    <div class="fields"><label class="fld">Odhodki – realizacija<input type="text" inputmode="decimal" id="fr-or"></label><label class="fld">Odhodki – isto obdobje lani<input type="text" inputmode="decimal" id="fr-ol"></label><label class="fld">Odhodki – letni plan<input type="text" inputmode="decimal" id="fr-op"></label></div>
-    <div class="row"><button class="btn primary" data-act="fr-shrani">Shrani obdobje</button><button class="btn ghost" data-act="fr-preklici">Prekliči</button></div></div>`;
-}
-
-/* ---------- uvoz poslovanja ---------- */
-const MESRE=[["januar",1],["februar",2],["marec",3],["april",4],["maj",5],["junij",6],["julij",7],["avgust",8],["september",9],["oktober",10],["november",11],["december",12]];
-function parseSheet(name,aoa){
-  const txt=aoa.slice(0,6).map(r=>(r||[]).filter(v=>typeof v==="string").join(" ")).join(" ");
-  let doM=null;const m=txt.match(/januar\w*\s*[-–]\s*([a-zčšž]+)/i);if(m){const f=MESRE.find(([n])=>m[1].toLowerCase().startsWith(n.slice(0,4)));if(f)doM=f[1]}
-  const sn=String(name).match(/^\s*1\s*[-–]\s*(\d{1,2})\s*$/);if(!doM&&sn)doM=+sn[1];
-  let hi=aoa.findIndex(r=>(r||[]).some((v,i)=>i>0&&typeof v==="string"&&/plan/i.test(v)));if(hi<0)hi=0;
-  const hdr=[];const w=Math.max(...aoa.slice(hi,hi+2).map(r=>(r||[]).length),0);
-  for(let c=0;c<w;c++)hdr.push([aoa[hi]&&aoa[hi][c],aoa[hi+1]&&aoa[hi+1][c]].filter((v,j)=>v!=null&&v!==""&&(j===0||typeof v==="string")).map(String).join(" ").trim());
-  const years=[...txt.matchAll(/20\d\d/g),...hdr.join(" ").matchAll(/20\d\d/g)].map(x=>+x[0]);
-  const isPlan=!doM&&/plan/i.test(txt+" "+hdr.join(" "))&&!/analiz/i.test(txt);
-  const kind=isPlan?"plan":"obdobje";
-  const ys=hdr.map(h=>{const x=String(h).match(/20\d\d/);return x?+x[0]:null});
-  let leto=kind==="plan"?Math.max(0,...hdr.map((h,i)=>/plan/i.test(h)?ys[i]||0:0)):(years.length?Math.max(...years.filter(v=>txt.includes(String(v))).concat([0])):0);
-  if(!leto)leto=years.length?Math.max(...years):new Date().getFullYear();
-  const sh={name,kind,leto,do:doM||12,hdr,ys,aoa,hi,sel:true};sh.cols=guessCols(sh);return sh;
-}
-function guessCols(sh){
-  const {hdr,ys,kind,leto}=sh;const col=(re,yr,not)=>hdr.findIndex((h,i)=>i>0&&re.test(h)&&(!not||!not.test(h))&&(yr==null||ys[i]===yr));
-  const c={};
-  if(kind==="plan"){c.plan=col(/plan/i,leto);if(c.plan<0)c.plan=col(/plan/i);c.planLani=col(/plan/i,leto-1);c.lani=col(/real/i,leto-1);if(c.lani<0)c.lani=col(/real/i)}
-  else{c.plan=col(/plan/i,null,/\//);c.real=col(/.*/,leto,/plan|\/|real/i);c.lani=col(/.*/,leto-1,/plan|\/|real/i)}
-  Object.keys(c).forEach(k=>{if(c[k]<0)c[k]=null});return c;
-}
-function sheetRows(sh){
-  const rows=[];let sek="o";
-  for(let i=sh.hi+1;i<sh.aoa.length;i++){const r=sh.aoa[i]||[];const lab=typeof r[0]==="string"?r[0].replace(/\s+/g," ").trim():"";
-    if(!lab)continue;if(/^(pripravil|ljubljana,)/i.test(lab))break;
-    if(/^prihodki$/i.test(lab)){sek="p";continue}
-    if(/^stroški$/i.test(lab))continue;
-    const num=c=>{if(c==null)return null;const v=r[c];return typeof v==="number"&&isFinite(v)?Math.round(v*100)/100:null};
-    const o={naziv:lab,sek,tip:/^skupaj|^ostali stroški|^skupaj celotni/i.test(lab)?"s":/dobiček|izguba/i.test(lab)?"x":"p"};
-    ["plan","real","lani","planLani"].forEach(k=>{if(k in sh.cols)o[k]=num(sh.cols[k])});
-    if(["plan","real","lani","planLani"].every(k=>o[k]==null))continue;
-    if(o.tip==="x")continue;
-    rows.push(o)}
-  return rows;
-}
-async function readExcel(file){
-  if(!window.XLSX)throw new Error("Branje Excela ni na voljo.");
-  const wb=XLSX.read(await file.arrayBuffer(),{type:"array"});
-  const sheets=wb.SheetNames.map(n=>parseSheet(n,XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:null}))).filter(sh=>(sh.cols.plan!=null||sh.cols.real!=null)&&sheetRows(sh).length>3);
-  if(!sheets.length)throw new Error("V datoteki ni prepoznanih listov s plani ali analizami.");
-  // privzeto izberi samo liste za leto, ki je najnovejše, plus vse analize
-  ui.imp={vir:file.name,sheets,sejaId:"",cur:0};render();
-}
-const colLetter=i=>String.fromCharCode(65+i);
-function vImport(){
-  const im=ui.imp;const sh=im.sheets[im.cur];const rows=sh.rows||sheetRows(sh);const t=rowTotals(rows,sh.kind==="plan"?"plan":"real");
-  const colSel=(k,lab)=>`<label class="fld">${lab}<select data-impcol="${k}"><option value="">–</option>${sh.hdr.map((h,i)=>i?`<option value="${i}" ${sh.cols[k]===i?"selected":""}>${colLetter(i)}: ${esc(h||"(brez naslova)")}</option>`:"").join("")}</select></label>`;
-  return `<div class="panel" style="background:var(--accent-soft);border:0" id="impBox"><div class="panel-head"><h3>Uvoz iz datoteke ${esc(im.vir)}</h3><button class="btn ghost" data-act="imp-preklici">Prekliči</button></div>
-    ${im.sheets.length>1?`<div class="fld"><span>Listi v datoteki (označite, katere uvozim)</span><div class="checks">${im.sheets.map((s,i)=>`<label><input type="checkbox" data-impsel="${i}" ${s.sel?"checked":""}> <button class="btn ${i===im.cur?"primary":"ghost"} small" data-act="imp-list" data-id="${i}">${esc(s.name)}</button></label>`).join("")}</div></div>`:""}
-    <div class="fields"><label class="fld">Vrsta<select data-impf="kind"><option value="plan" ${sh.kind==="plan"?"selected":""}>Letni plan</option><option value="obdobje" ${sh.kind==="obdobje"?"selected":""}>Analiza za obdobje</option></select></label>
-      <label class="fld">Leto<input type="text" inputmode="numeric" data-impf="leto" value="${esc(sh.leto)}"></label>
-      ${sh.kind==="obdobje"?`<label class="fld">Obdobje<select data-impf="do">${[1,2,3,4,5,6,7,8,9,10,11,12].map(m=>`<option value="${m}" ${sh.do===m?"selected":""}>${OBD_IME(m)}</option>`).join("")}</select></label>`:""}</div>
-    <div class="fields">${sh.kind==="plan"?colSel("plan","Stolpec: plan tega leta")+colSel("planLani","Stolpec: plan lani")+colSel("lani","Stolpec: realizacija lani"):colSel("plan","Stolpec: letni plan")+colSel("real","Stolpec: realizacija obdobja")+colSel("lani","Stolpec: isto obdobje lani")}</div>
-    <label class="fld">Obravnavano na seji (neobvezno)<select id="imp-seja"><option value="">–</option>${[...S.seje].sort((a,b)=>b.datum.localeCompare(a.datum)).map(s=>`<option value="${s.id}" ${im.sejaId===s.id?"selected":""}>${esc(s.stevilka)}. seja, ${esc(fmtDate(s.datum))}</option>`).join("")}</select></label>
-    <p class="small"><strong>Predogled lista »${esc(sh.name)}«:</strong> ${rows.length} postavk · prihodki ${EUR(t.p)} · odhodki ${EUR(t.o)} · izid ${EUR(t.z)}</p>
-    <div class="tablewrap" style="max-height:260px;overflow:auto"><table><thead><tr><th>Postavka</th>${sh.kind==="plan"?"<th class='r'>Plan</th><th class='r'>Plan lani</th><th class='r'>Real. lani</th>":"<th class='r'>Letni plan</th><th class='r'>Realizacija</th><th class='r'>Lani</th>"}</tr></thead><tbody>
-    ${rows.map(r=>`<tr${r.tip!=="p"?` style="font-weight:600"`:""}><td>${r.sek==="p"?"<span class='chip good' style='margin-right:6px'>prihodek</span>":""}${esc(r.naziv)}</td>${(sh.kind==="plan"?["plan","planLani","lani"]:["plan","real","lani"]).map(k=>`<td class="r num">${EUR(r[k])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
-    <div class="row"><button class="btn primary" data-act="imp-uvozi">Uvozi označene liste (${im.sheets.filter(s=>s.sel).length})</button><span class="small muted">Obstoječi plan ali obdobje za isto leto se zamenja.</span></div></div>`;
-}
-function doImport(){
-  const im=ui.imp;let n=0;const by={};
-  im.sheets.filter(s=>s.sel).forEach(sh=>{const rows=sh.rows||sheetRows(sh);const y=+sh.leto;if(!y)return;
-    const key=String(y);const doc=by[key]||(by[key]=strip(S.finance[key]||{}));doc.leto=y;doc.druzbaId=S.druzbaId;
-    const meta={rows,vir:im.vir+" · list "+sh.name,uvozeno:new Date().toISOString(),sejaId:im.sejaId||""};
-    if(sh.kind==="plan")doc.plan=meta;else{doc.obdobja=doc.obdobja||{};doc.obdobja[sh.do]={do:+sh.do,...meta}}n++});
-  Object.entries(by).forEach(([y,doc])=>write(fdPath("finance",y),doc));
-  const ys=Object.keys(by).map(Number);if(ys.length)ui.leto=Math.max(...ys);ui.obd=null;ui.imp=null;render();toast(`Uvoženih ${n} listov.`);
-}
-async function finFromDoc(file){
-  const prompt=`Iz priloženega dokumenta (poslovni načrt ali analiza poslovanja družbe) izlušči podatke po postavkah.
-Vrni JSON objekt: {"vrsta":"plan"|"obdobje","leto":število,"do_meseca":število 1-12 (za letni plan 12),"postavke":[{"naziv":string,"sekcija":"odhodki"|"prihodki","tip":"postavka"|"skupaj","plan":število|null,"real":število|null,"lani":število|null,"plan_lani":število|null}]}
-- "plan" = letni plan tekočega leta; "real" = realizacija obdobja (pri letnem planu null); "lani" = realizacija lani (za isto obdobje); "plan_lani" = plan lanskega leta (samo pri letnem planu).
-- Vmesne in končne vsote (npr. »skupaj material«, »skupaj odhodki«, »skupaj prihodki«) označi s tip "skupaj". Dobička/izgube ne vključi.
-- Zneske vrni kot števila v evrih brez ločil tisočic. Ne izmišljuj podatkov; manjkajoče naj bodo null.`;
-  const toRows=j=>(j.postavke||[]).map(p=>({naziv:String(p.naziv||""),sek:p.sekcija==="prihodki"?"p":"o",tip:p.tip==="skupaj"?"s":"p",plan:numOrNull(p.plan),real:numOrNull(p.real),lani:numOrNull(p.lani),planLani:numOrNull(p.plan_lani)})).filter(r=>r.naziv);
-  const open=j=>{const kind=j.vrsta==="plan"?"plan":"obdobje";const rows=toRows(j);
-    ui.imp={vir:file.name,sejaId:"",cur:0,sheets:[{name:"dokument",kind,leto:+j.leto||ui.leto,do:+j.do_meseca||12,hdr:[],cols:{},rows,sel:true}]};render()};
-  if(!LS.get("apiKey","")){ui.manual={kind:"fin",prompt:prompt+"\n\nDokument sem priložila temu sporočilu.\n\nVrni SAMO veljaven JSON.",result:"",open,file:file.name};render();return}
-  toast("Claude bere dokument …",15000);
-  try{let content;
-    if(/\.pdf$/i.test(file.name)){const b64=await new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(String(fr.result).split(",")[1]);fr.onerror=rej;fr.readAsDataURL(file)});
-      content=[{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},{type:"text",text:prompt+"\n\nVrni SAMO veljaven JSON."}]}
-    else{const t=await readFileText(file);content=prompt+"\n\n<dokument>\n"+t.slice(0,150000)+"\n</dokument>\n\nVrni SAMO veljaven JSON."}
-    const {text}=await claude(content,{maxTokens:12000});const mm=text.match(/\{[\s\S]*\}/);open(JSON.parse(mm?mm[0]:text));toast("Preverite predogled in kliknite Uvozi.")}
-  catch(e){toast(errMsg(e),6000)}
-}
-const numOrNull=v=>{if(v==null||v==="")return null;const n=typeof v==="number"?v:parseNum(v);return n!=null&&isFinite(n)?n:null};
 function finWord(){
-  const y=ui.leto,f=finSum(y,ui.obd||undefined),P=f.period,d=druzba();if(!P){toast("Ni obdobja za poročilo.");return}
-  const exp=P.do/12*100;
-  const rows=[["Postavka","Letni plan","Realizacija","% plana","Lani","Indeks"],...P.rows.map(r=>[r.naziv,EUR(r.plan),EUR(r.real),r.plan&&r.real!=null?PCT(r.real/r.plan*100):"",EUR(r.lani),r.lani&&r.real!=null?PCT(r.real/r.lani*100):""].map(x=>x==="–"?"":x))];
-  const body=wPara(d.naziv,{b:true})+wPara("")+wPara(`POSLOVANJE ${OBD_IME(P.do).toUpperCase()} ${y}`,{b:true,sz:26})+wPara(`Vir: ${P.vir||""}`)+wPara("")+
-    wPara(`Prihodki: ${EUR(f.pR)} (${f.pPy?PCT(f.pR/f.pPy*100):"–"} letnega plana; pričakovano ${PCT(exp)}; indeks glede na lani ${f.pL?PCT(f.pR/f.pL*100):"–"}).`)+
-    wPara(`Odhodki: ${EUR(f.oR)} (${f.oPy?PCT(f.oR/f.oPy*100):"–"} letnega plana; indeks glede na lani ${f.oL?PCT(f.oR/f.oL*100):"–"}).`)+
-    wPara(`Poslovni izid: ${EUR(f.zR)} (plan za obdobje ${EUR(f.zP)}; isto obdobje lani ${EUR(f.zL)}).`)+wPara("")+wTable(rows);
-  saveDocx(fname(`Poslovanje_${y}_${OBD_IME(P.do)}`)+".docx",body);
+  const y=ui.leto,f=finSum(y),d=druzba();
+  const rows=[["Mesec","Prihodki plan","Prihodki real.","Indeks","Odhodki plan","Odhodki real.","Izid plan","Izid real."],
+    ...f.rows.map(r=>[MESF[r.m-1],EUR(r.pP),EUR(r.pR),r.pR!=null&&r.pP?PCT(r.pR/r.pP*100):"",EUR(r.oP),EUR(r.oR),r.pP!=null||r.oP!=null?EUR((r.pP||0)-(r.oP||0)):"",r.pR!=null||r.oR!=null?EUR((r.pR||0)-(r.oR||0)):""].map(x=>x==="–"?"":x)),
+    ["Skupaj",EUR(f.pPy),EUR(sum(f.rows,"pR")),f.last&&f.pP?PCT(f.pR/f.pP*100):"",EUR(f.oPy),EUR(sum(f.rows,"oR")),EUR(f.zPy),EUR(f.zR)]];
+  const body=wPara(d.naziv,{b:true})+wPara("")+wPara(`POSLOVANJE ${y}: PLAN IN REALIZACIJA`,{b:true,sz:26})+wPara(f.last?`Obdobje realizacije: januar–${MESF[f.last-1]} ${y}`:"Realizacija še ni vnesena.")+wPara("")+
+    (f.last?wPara(`Prihodki: ${EUR(f.pR)} (plan za obdobje ${EUR(f.pP)}, indeks ${f.pP?PCT(f.pR/f.pP*100):"–"}). Odhodki: ${EUR(f.oR)} (plan ${EUR(f.oP)}). Poslovni izid: ${EUR(f.zR)} (plan ${EUR(f.zP)}).`)+wPara(""):"")+wTable(rows);
+  saveDocx(fname(`Poslovanje_${y}_plan_realizacija`)+".docx",body);
 }
 
 /* ---------- DIREKTOR ---------- */
@@ -969,7 +947,7 @@ function vDirektor(){
   const y=ui.leto,dd=dirData(y),ks=dd.kazalniki||[],sc=dirScore(y),f=finSum(y),d=druzba();
   const wsum=ks.reduce((s,k)=>s+(+k.utez||0),0);
   return `<section class="panel"><div class="panel-head"><h2>Poslovna uspešnost direktorja ${y}</h2><div class="row">${letaSel()}</div></div>
-    <p class="lede">Kazalniki s pripisano utežjo. Prihodki, poslovni izid in realizacija sklepov se izračunajo samodejno iz zavihkov Poslovanje in Sklepi${f.last?` (zadnje uvoženo obdobje: ${OBD_IME(f.last)})`:""}; cilj je privzeto sorazmerni del letnega plana za isto obdobje. Doseganje posameznega kazalnika šteje največ do 120 %.</p>
+    <p class="lede">Kazalniki s pripisano utežjo. Prihodki, poslovni izid in realizacija sklepov se izračunajo samodejno iz zavihkov Poslovanje in Sklepi${f.last?` (obdobje jan–${MES[f.last-1]})`:""}; cilj je privzeto plan za isto obdobje. Doseganje posameznega kazalnika šteje največ do 120 %.</p>
     ${ks.length?`<div class="row" style="gap:24px;align-items:center"><div><div class="score num" style="color:var(--${tone(sc)||"ink"})">${PCT(sc)}</div><div class="small muted">skupna ponderirana ocena doseganja${d.direktor?" · "+esc(d.direktor):""}</div></div>
       ${wsum!==100?`<span class="chip warn">Vsota uteži je ${NUM.format(wsum)} %, ne 100 %</span>`:""}</div>
     <div class="tablewrap"><table><thead><tr><th>Kazalnik</th><th>Vir</th><th class="r">Utež %</th><th class="r">Cilj</th><th class="r">Realizacija</th><th>Doseganje</th><th></th></tr></thead><tbody>
@@ -999,13 +977,13 @@ async function dirPorocilo(){
   const y=ui.leto,dd=dirData(y),f=finSum(y),d=druzba();
   const kpi=(dd.kazalniki||[]).map(k=>{const c=kpiCalc(k,y);return {kazalnik:k.naziv,vir:VIRI[k.vir],utez:k.utez,cilj:c.cilj,realizacija:c.real,doseganje_odstotkov:c.dos!=null?Math.round(c.dos*10)/10:null,manjse_je_bolje:!!k.manjse}});
   const sc=dirScore(y);
-  const prompt=`Pripravi poročilo nadzornega sveta o poslovni uspešnosti direktorja družbe ${d.naziv}${d.direktor?" ("+d.direktor+")":""} za leto ${y}${f.last?", obdobje "+OBD_IME(f.last):""}.
+  const prompt=`Pripravi poročilo nadzornega sveta o poslovni uspešnosti direktorja družbe ${d.naziv}${d.direktor?" ("+d.direktor+")":""} za leto ${y}${f.last?", obdobje januar–"+MESF[f.last-1]:""}.
 Uporabi samo spodnje podatke, nič ne izmišljuj. Formalna knjižna slovenščina, 250–450 besed, navadno besedilo brez markdown. Struktura:
 1) uvod (namen, obdobje, podlaga), 2) doseganje po kazalnikih z zneski in odstotki, 3) skupna ponderirana ocena, 4) ugotovitve NS (iz komentarja), 5) predlog sklepa NS v oglatih oklepajih [PREDLOG SKLEPA: …].
 Zneske piši v slovenskem zapisu (npr. 1.250.000 €).
 
 Podatki:
-${JSON.stringify({obdobje:f.last?OBD_IME(f.last):null,prihodki:{sorazmerni_plan_obdobja:f.pP,realizacija:f.pR,isto_obdobje_lani:f.pL,letni_plan:f.pPy},odhodki:{sorazmerni_plan_obdobja:f.oP,realizacija:f.oR,isto_obdobje_lani:f.oL,letni_plan:f.oPy},poslovni_izid:{sorazmerni_plan_obdobja:f.zP,realizacija:f.zR,isto_obdobje_lani:f.zL,letni_plan:f.zPy},kazalniki:kpi,skupna_ocena_odstotkov:sc!=null?Math.round(sc*10)/10:null,komentar_NS:dd.komentar||""},null,1)}`;
+${JSON.stringify({obdobje_realizacije_mesecev:f.last,prihodki:{plan_obdobje:f.pP,realizacija:f.pR,letni_plan:f.pPy},odhodki:{plan_obdobje:f.oP,realizacija:f.oR},poslovni_izid:{plan_obdobje:f.zP,realizacija:f.zR,letni_plan:f.zPy},kazalniki:kpi,skupna_ocena_odstotkov:sc!=null?Math.round(sc*10)/10:null,komentar_NS:dd.komentar||""},null,1)}`;
   if(!LS.get("apiKey","")){ui.manual={kind:"dir",prompt,result:""};render();return}
   ui.busy.dir=true;ui.dirPorocilo="";render();
   try{const r=await claude(prompt,{maxTokens:4000,onText:({text})=>{ui.dirPorocilo=text;const t=$("#dir-por");if(t)t.value=text}});ui.dirPorocilo=r.text||ui.dirPorocilo}
@@ -1048,7 +1026,6 @@ function vNastavitve(){
     <div class="fields"><label class="fld">Direktor<input type="text" id="n-direktor" value="${esc(d.direktor)}"></label><label class="fld">Običajni kraj sej<input type="text" id="n-kraj" value="${esc(d.kraj)}" placeholder="npr. sejna soba na sedežu družbe"></label></div>
     <h3>Člani nadzornega sveta</h3>
     ${d.clani.map((c,i)=>`<div class="fields"><label class="fld">Ime in priimek<input type="text" id="n-cl-ime-${i}" value="${esc(c.ime)}"></label><label class="fld">Funkcija<input type="text" id="n-cl-fun-${i}" value="${esc(c.funkcija)}"></label></div>`).join("")}
-    <label class="fld">Moja pravila za zapisnik (vsako pravilo v svojo vrstico)<textarea id="n-pravila" rows="4" placeholder="npr. Sklepe označi kot »Sklep št. 12/3«.&#10;Razpravo pri vsaki točki povzemi v največ treh stavkih.&#10;Na koncu navedi uro zaključka seje.">${esc(d.pravila)}</textarea></label>
     <div class="row"><button class="btn primary" data-act="nastavitve-shrani">Shrani podatke družbe</button></div>
   </section>`+vNastavitveSplosno();
 }
@@ -1072,6 +1049,14 @@ function vNastavitveSplosno(){
     <div class="row"><button class="btn primary" data-act="key-shrani">Shrani</button><button class="btn ${ui.busy.key?"busy":""}" data-act="key-test" ${key&&!ui.busy.key?"":"disabled"}>Preizkusi ključ</button></div>
   </section>
 
+  <section class="panel"><div class="panel-head"><h2>Soniox – sprotni prepis seje</h2>${LS.get("sonioxKey","")?(LS.get("sonioxOn",true)!==false?`<span class="chip good">Vklopljeno</span>`:`<span class="chip">Izklopljeno</span>`):`<span class="chip">Ni ključa</span>`}</div>
+    <p class="lede">Z ključem Soniox se med snemanjem seje prepis piše sam, z ločenimi govorci, in se shrani v korak 4. Prepisa posnetka v Wordu ni več treba delati. Ključ ustvarite na console.soniox.com (API keys); shrani se samo na tej napravi, zato ga vpišite na računalniku in na telefonu. Zvok seje se med snemanjem pošilja Sonioxu v prepis.</p>
+    <div class="fields"><label class="fld">Soniox API ključ<input type="password" id="n-sxkey" value="${esc(LS.get("sonioxKey",""))}" autocomplete="off" placeholder="prilepite ključ"></label>
+      <label class="fld">Model<input type="text" id="n-sxmodel" value="${esc(LS.get("sonioxModel","stt-rt-v6"))}"></label></div>
+    <div class="checks"><label><input type="checkbox" id="n-sxon" ${LS.get("sonioxOn",true)!==false?"checked":""}>Med snemanjem sproti prepisuj</label></div>
+    <div class="row"><button class="btn primary" data-act="sx-shrani">Shrani</button><button class="btn ${ui.busy.sx?"busy":""}" data-act="sx-test" ${LS.get("sonioxKey","")&&!ui.busy.sx?"":"disabled"}>Preizkusi ključ</button></div>
+  </section>
+
   <section class="panel"><h2>Varnostna kopija</h2>
     <p class="lede">Izvoz podatkov vseh družb v datoteko (brez zvočnih posnetkov). Z uvozom lahko prenesete tudi podatke iz različice aplikacije v Claudu; obstoječi podatki se ohranijo.</p>
     <div class="row"><button class="btn" data-act="izvozi">Izvozi podatke</button><label class="btn" for="uvozFile">Uvozi podatke</label><input type="file" id="uvozFile" accept=".json,application/json" hidden></div>
@@ -1082,7 +1067,7 @@ function vNastavitveSplosno(){
       <li><strong>Windows:</strong> v Edgeu ali Chromu kliknite ikono za namestitev v naslovni vrstici ali gumb »Namesti aplikacijo« zgoraj.</li>
       <li><strong>iPhone:</strong> v Safariju tapnite Deli → Dodaj na začetni zaslon. Odpirajte jo vedno z ikone na začetnem zaslonu.</li>
     </ul>
-    <p class="small muted">Različica 1 · ${isStandalone()?"nameščena aplikacija":"v brskalniku"}</p>
+    <p class="small muted">Različica 2 · ${isStandalone()?"nameščena aplikacija":"v brskalniku"}</p>
   </section>`;
 }
 
@@ -1135,10 +1120,6 @@ async function act(a,id){
     case "vabilo-word":saveDocx(fname(`Vabilo_${s.stevilka}_seja_NS_${s.datum}`)+".docx",textToW(s.vabilo));break;
     case "zapisnik-word":saveDocx(fname(`Zapisnik_${s.stevilka}_seja_NS_${s.datum}`)+".docx",textToW(s.zapisnik));break;
     case "kopiraj":{const t=document.getElementById(id);if(!t)break;try{await navigator.clipboard.writeText(t.value);toast("Besedilo je kopirano.")}catch(e){t.focus();t.select();toast("Besedilo je označeno – kopirajte ga.")}break}
-    case "pravila-shrani":{const v=($("#seja-pravila").value||"").trim();write("druzbe/"+S.druzbaId,{...strip(S.druzba),pravila:v});toast("Pravila so shranjena.");render();break}
-    case "zapisnik-predloga":{const t=(s.zapisnik||"").trim();if(!t)break;const naziv=`Zapisnik ${s.stevilka}. seje, ${fmtDate(s.datum)}`;
-      const ex=S.predloge.find(p=>p.sejaId===ui.sejaId);write("predloge/"+(ex?ex.id:uid()),{naziv,besedilo:t.slice(0,MAXC),datum:new Date().toISOString(),sejaId:ui.sejaId});
-      toast(ex?"Predloga za to sejo je posodobljena.":"Zapisnik je shranjen med pretekle zapisnike in bo vzorec za naslednje.",5000);break}
     case "prepis-shrani":{const t=ui.prepis||"";write("prepisi/"+ui.sejaId,{besedilo:t,posodobljeno:new Date().toISOString()});ui.prepisSaved=t;toast("Prepis je shranjen.");render();break}
     case "zapisnik-pripravi":await pripraviZapisnik();break;
     case "zapisnik-ustavi":if(zapisnikCtl)zapisnikCtl.abort();break;
@@ -1171,20 +1152,7 @@ async function act(a,id){
       write("sklepi/"+sid,data);ui.sklepEdit=null;toast("Sklep je shranjen.");render();break}
     case "sklep-brisi":if(arm("sk-"+id)){write("sklepi/"+id,null);ui.sklepEdit=null;render()}break;
     case "sklepi-word":sklepiWord();break;
-    case "fin-obd":ui.obd=+id;render();break;
-    case "fin-vse":ui.finVse=!ui.finVse;render();break;
-    case "plan-vse":ui.planVse=!ui.planVse;render();break;
-    case "fin-plan-brisi":if(arm("fp")){const k=String(ui.leto);const doc=strip(S.finance[k]);delete doc.plan;write(fdPath("finance",ui.leto),doc);render()}break;
-    case "fin-obd-brisi":if(arm("fo-"+id)){const k=String(ui.leto);const doc=strip(S.finance[k]);delete doc.obdobja[id];write(fdPath("finance",ui.leto),doc);ui.obd=null;render()}break;
-    case "fin-rocno":ui.finRocno={leto:ui.leto,do:6};render();break;
-    case "fr-preklici":ui.finRocno=null;render();break;
-    case "fr-shrani":{const y=+$("#fr-leto").value,dm=+$("#fr-do").value,g=id=>parseNum($(id).value);if(!y){toast("Vpišite leto.");break}
-      const rows=[{naziv:"Skupaj odhodki",sek:"o",tip:"s",plan:g("#fr-op"),real:g("#fr-or"),lani:g("#fr-ol")},{naziv:"Skupaj prihodki",sek:"p",tip:"s",plan:g("#fr-pp"),real:g("#fr-pr"),lani:g("#fr-pl")}];
-      const doc=strip(S.finance[String(y)]||{});doc.leto=y;doc.druzbaId=S.druzbaId;doc.obdobja=doc.obdobja||{};doc.obdobja[dm]={do:dm,rows,vir:"ročni vnos",uvozeno:new Date().toISOString(),sejaId:""};
-      write(fdPath("finance",y),doc);ui.finRocno=null;ui.leto=y;ui.obd=dm;render();toast("Obdobje je shranjeno.");break}
-    case "imp-preklici":ui.imp=null;render();break;
-    case "imp-list":ui.imp.cur=+id;render();break;
-    case "imp-uvozi":if(!ui.imp.sheets.some(x=>x.sel)){toast("Označite vsaj en list.");break}doImport();break;
+    case "fin-uvozi":finUvozi();break;
     case "fin-word":finWord();break;
     case "kpi-privzeti":dirSet(ui.leto,d=>{d.kazalniki=[
       {id:uid(),naziv:"Prihodki od prodaje",vir:"prihodki",utez:30},
@@ -1202,7 +1170,7 @@ async function act(a,id){
       write("predloge/"+uid(),{naziv:n,besedilo:t.slice(0,MAXC),datum:new Date().toISOString()});ui.novaPredloga=false;toast("Zapisnik je dodan med predloge.");render();break}
     case "predloga-pokazi":ui.predlogaOdprta=ui.predlogaOdprta===id?null:id;render();break;
     case "predloga-brisi":if(arm("p-"+id)){write("predloge/"+id,null);render()}break;
-    case "nastavitve-shrani":{const cur=druzba();const d={pravila:(($("#n-pravila")||{}).value||"").trim(),naziv:$("#n-naziv").value.trim()||cur.naziv,naslov:$("#n-naslov").value.trim(),direktor:$("#n-direktor").value.trim(),kraj:$("#n-kraj").value.trim(),
+    case "nastavitve-shrani":{const cur=druzba();const d={naziv:$("#n-naziv").value.trim()||cur.naziv,naslov:$("#n-naslov").value.trim(),direktor:$("#n-direktor").value.trim(),kraj:$("#n-kraj").value.trim(),
       clani:cur.clani.map((c,i)=>({ime:$("#n-cl-ime-"+i).value.trim(),funkcija:$("#n-cl-fun-"+i).value.trim()}))};
       write("druzbe/"+S.druzbaId,d);toast("Podatki družbe so shranjeni.");render();break}
     case "druzba-dodaj":{const n=(($("#nd-naziv")||{}).value||"").trim();if(!n){toast("Vpišite naziv družbe.");break}const nid=uid();write("druzbe/"+nid,{naziv:n,clani:[{ime:"",funkcija:"predsednica"},{ime:"",funkcija:"namestnik predsednice"},{ime:"",funkcija:"član"}]});setDruzba(nid);ui.tab="nastavitve";render();toast("Družba "+n+" je dodana. Dopolnite podatke in člane NS.");break}
@@ -1216,6 +1184,8 @@ async function act(a,id){
     case "client-shrani":{LS.set("clientId",$("#n-client").value.trim());toast("Client ID je shranjen.");Sync.msal=null;await Sync.init();render();break}
     case "key-shrani":LS.set("apiKey",$("#n-key").value.trim());LS.set("model",$("#n-model").value);toast("Nastavitve za Claude so shranjene.");render();break;
     case "key-test":{ui.busy.key=true;render();try{await claude("Odgovori samo z besedo: deluje",{maxTokens:10,model:"claude-haiku-5-5"});toast("Ključ deluje.")}catch(e){toast(errMsg(e),6000)}ui.busy.key=false;render();break}
+    case "sx-shrani":LS.set("sonioxKey",$("#n-sxkey").value.trim());LS.set("sonioxModel",$("#n-sxmodel").value.trim()||"stt-rt-v6");LS.set("sonioxOn",$("#n-sxon").checked);LS.set("sonioxLegacy",false);toast("Nastavitve za Soniox so shranjene.");render();break;
+    case "sx-test":{ui.busy.sx=true;render();try{await Live.test();toast("Ključ Soniox deluje.")}catch(e){toast("Ključ ne deluje: "+(e.message||e),7000)}ui.busy.sx=false;render();break}
     case "izvozi":exportData();break;
     case "skrij-ios":LS.set("hideIosTip",true);render();break;
   }
@@ -1237,15 +1207,8 @@ document.addEventListener("change",async ev=>{
   if(el.dataset.predloga){const set=new Set(ui.izbranePredloge);el.checked?set.add(el.dataset.predloga):set.delete(el.dataset.predloga);ui.izbranePredloge=[...set];return}
   if(el.dataset.izl!=null){ui.izlusceni[+el.dataset.izl].sel=el.checked;return}
   if(el.dataset.statusId){const sk=S.sklepi.find(x=>x.id===el.dataset.statusId);if(sk){write("sklepi/"+sk.id,{...strip(sk),status:el.value});toast("Status sklepa je posodobljen.")}return}
-  if(el.id==="leto"){ui.leto=+el.value;ui.obd=null;ui.dirPorocilo="";render();return}
-  if(el.id==="finFile"&&el.files&&el.files[0]){try{await readExcel(el.files[0])}catch(e){toast("Uvoz ni uspel: "+(e.message||e),6000)}el.value="";return}
-  if(el.id==="finDocFile"&&el.files&&el.files[0]){const f=el.files[0];el.value="";await finFromDoc(f);return}
-  if(el.dataset.impsel!=null){ui.imp.sheets[+el.dataset.impsel].sel=el.checked;render();return}
-  if(el.dataset.impcol){const sh=ui.imp.sheets[ui.imp.cur];sh.cols[el.dataset.impcol]=el.value===""?null:+el.value;delete sh.rows;render();return}
-  if(el.dataset.impf){const sh=ui.imp.sheets[ui.imp.cur];const k=el.dataset.impf;sh[k]=k==="kind"?el.value:+el.value;
-    if((k==="kind"||k==="leto")&&sh.aoa){sh.cols=guessCols(sh);delete sh.rows}
-    render();return}
-  if(el.id==="imp-seja"){ui.imp.sejaId=el.value;return}
+  if(el.id==="leto"){ui.leto=+el.value;ui.dirPorocilo="";render();return}
+  if(el.dataset.m){const v=parseNum(el.value);finSet(ui.leto,+el.dataset.m,el.dataset.k,v);el.value=fmtIn(v);return}
   if(el.dataset.ki!=null){const i=+el.dataset.ki,f=el.dataset.kf;let v=el.type==="checkbox"?el.checked:el.value;
     if(f==="utez"||f==="cilj"||f==="realizacija")v=parseNum(v);
     dirSet(ui.leto,d=>{const k=d.kazalniki[i];if(!k)return;if(f==="cilj"&&v==null)delete k.cilj;else k[f]=v; if(f==="vir"){delete k.cilj;delete k.realizacija}});

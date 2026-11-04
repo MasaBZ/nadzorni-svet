@@ -2,8 +2,8 @@
 const VERSION = "nadzorni-svet-v2";
 const SHELL = [
   "./", "./index.html", "./app.js", "./config.js", "./manifest.webmanifest",
-  "./msal-browser.min.js", "./jszip.min.js", "./mammoth.browser.min.js", "./xlsx.full.min.js",
-  "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png", "./favicon-32.png"
+  "./vendor/msal-browser.min.js", "./vendor/jszip.min.js", "./vendor/mammoth.browser.min.js",
+  "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png", "./icons/favicon-32.png"
 ];
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)));
