@@ -51,7 +51,7 @@ const IDB={db:null,
 /* ---------- podatkovni model ----------
    D.col[zbirka][id] = {...polja, _u: čas spremembe, _d: 1 če izbrisano}
 */
-const COLS=["druzbe","seje","sklepi","predloge","finance","direktor","prepisi","nastavitve","posnetki"];
+const COLS=["druzbe","seje","sklepi","predloge","finance","direktor","prepisi","nastavitve","posnetki","porocila"];
 const PER_DRUZBA=["seje","sklepi","predloge","posnetki"];
 let D={v:1,col:{}}; COLS.forEach(c=>D.col[c]={});
 const S={druzbe:[],druzbaId:null,seje:[],sklepi:[],predloge:[],finance:{},direktor:{},druzba:null,prepisi:{},posnetki:[]};
@@ -115,7 +115,7 @@ const Sync={msal:null,account:null,state:"off",msg:"",last:LS.get("lastSync",nul
     if(!cid||!window.msal){this.set("off");return}
     try{
       const base=location.origin+location.pathname.replace(/[^/]*$/,"");
-      this.msal=new msal.PublicClientApplication({auth:{clientId:cid,authority:(window.NS_CONFIG||{}).AUTHORITY||"https://login.microsoftonline.com/common",redirectUri:base,postLogoutRedirectUri:base,navigateToLoginRequestUrl:false},cache:{cacheLocation:"localStorage"}});
+      this.msal=new msal.PublicClientApplication({auth:{clientId:cid,authority:(LS.get("tenant","")?"https://login.microsoftonline.com/"+LS.get("tenant","").trim():((window.NS_CONFIG||{}).AUTHORITY||"https://login.microsoftonline.com/common")),redirectUri:base,postLogoutRedirectUri:base,navigateToLoginRequestUrl:false},cache:{cacheLocation:"localStorage"}});
       await this.msal.initialize();
       const r=await this.msal.handleRedirectPromise();
       this.account=(r&&r.account)||this.msal.getAllAccounts()[0]||null;
@@ -271,7 +271,7 @@ function render(){
     const sv=savedSeja();if(!sv){ui.sejaId=null;ui.draft=null}else if(!isDirty()&&ui._draftU!==sv._u){ui.draft=clone(sv);ui._draftU=sv._u}
   }
   if(!S.druzbe.length&&ui.tab!=="nastavitve"){main.innerHTML=vOnboarding();return}
-  const v={pregled:vPregled,seje:ui.sejaId?vSeja:vSeje,sklepi:vSklepi,poslovanje:vPoslovanje,direktor:vDirektor,predloge:vPredloge,nastavitve:vNastavitve}[ui.tab]||vPregled;
+  const v={pregled:vPregled,seje:ui.sejaId?vSeja:vSeje,sklepi:vSklepi,poslovanje:vPoslovanje,direktor:vDirektor,predloge:vPredloge,porocilo:vPorocilo,nastavitve:vNastavitve}[ui.tab]||vPregled;
   main.innerHTML=installNote()+v();
   if(ui.tab==="seje"&&ui.sejaId)updateDirty();
 }
@@ -365,7 +365,9 @@ function vPregled(){
       <div><div style="font-weight:600">${esc(fmtDateLong(prih.datum))}${prih.ura?", ob "+esc(prih.ura):""}</div><div class="muted small">${esc(prih.kraj||"kraj ni določen")} · ${(prih.tocke||[]).length} točk dnevnega reda</div></div></div>
       <div class="row">${chip(SEJA_ST,prih.status)}<button class="btn" data-act="odpri-sejo" data-id="${prih.id}">Odpri sejo</button></div>`
     :emptyBox("Ni sklicane seje",zadnja?`Zadnja seja je bila ${esc(fmtDate(zadnja.datum))}.`:"Ustvarite prvo sejo in pripravite vabilo z dnevnim redom.",`<button class="btn primary" data-act="nova-seja">Nova seja</button>`);
-  return `
+  const cak=S.seje.filter(x=>x.status==="potrjena"&&(S.posnetki.some(p=>p.sejaId===x.id)||S.prepisi[x.id]));
+  const banner=cak.length?`<div class="banner warn"><span>${cak.length===1?"Za potrjeno "+esc(cak[0].stevilka)+". sejo še obstaja":"Za "+cak.length+" potrjene seje še obstajata"} posnetek ali prepis, ki bi ga bilo treba po potrditvi zapisnika izbrisati.</span><button class="btn" data-act="odpri-sejo" data-id="${cak[0].id}">Odpri ${esc(cak[0].stevilka)}. sejo</button></div>`:"";
+  return banner+`
   <div class="grid2">
     <section class="panel"><div class="panel-head"><h2>Naslednja seja</h2></div>${sejaCard}
       ${zadnja&&zadnja.status!=="potrjena"?`<p class="small muted">Zapisnik ${esc(zadnja.stevilka)}. seje (${esc(fmtDate(zadnja.datum))}) še ni potrjen. <button class="btn ghost small" data-act="odpri-sejo" data-id="${zadnja.id}">Odpri</button></p>`:""}
@@ -392,7 +394,7 @@ function vPregled(){
 /* ---------- SEJE ---------- */
 function vSeje(){
   const list=[...S.seje].sort((a,b)=>(b.datum||"").localeCompare(a.datum||""));
-  return `<section class="panel"><div class="panel-head"><h2>Seje</h2><button class="btn primary" data-act="nova-seja">Nova seja</button></div>
+  return `<section class="panel"><div class="panel-head"><h2>Seje</h2><div class="row"><button class="btn" data-act="koledar">Koledar (.ics)</button><button class="btn primary" data-act="nova-seja">Nova seja</button></div></div>
   <p class="lede">Za vsako sejo: dnevni red in vabilo, snemanje, prepis in osnutek zapisnika v slogu vaših preteklih zapisnikov.</p>
   ${list.length?`<div>${list.map(s=>{const n=S.sklepi.filter(k=>k.sejaId===s.id).length;const np=S.posnetki.filter(p=>p.sejaId===s.id).length;return `<button class="sejarow" data-act="odpri-sejo" data-id="${s.id}">
     <span class="sejano">${esc(s.stevilka)}.<small>${s.vrsta==="korespondencna"?"dopisna":"seja"}</small></span>
@@ -471,19 +473,20 @@ function vSeja(){
 
   <section class="panel">
     <div class="step"><span class="n">2</span><div><h2>Vabilo z gradivom</h2><p class="small muted">Vabilo se sestavi iz podatkov zgoraj. Besedilo lahko uredite in ga prenesete kot Word.</p></div></div>
-    <div class="row"><button class="btn" data-act="vabilo-sestavi">${s.vabilo?"Sestavi znova iz dnevnega reda":"Sestavi vabilo"}</button>
+    <div class="row"><button class="btn" data-act="vabilo-sestavi">${s.vabilo?"Sestavi znova iz dnevnega reda":"Sestavi vabilo"}</button><button class="btn primary" data-act="paket">Paket gradiva (Word)</button>
       ${s.vabilo?`<button class="btn" data-act="vabilo-word">Prenesi Word</button><button class="btn ghost" data-act="kopiraj" data-id="f-vabilo">Kopiraj besedilo</button>`:""}</div>
     ${s.vabilo?`<textarea class="doc" id="f-vabilo" data-f="vabilo" style="min-height:360px">${esc(s.vabilo)}</textarea>`:""}
-    <p class="small muted">Gradivo (poročila, izkazi) priložite e-pošti kot doslej; v vabilu so našteta po točkah.</p>
+    <p class="small muted">Paket gradiva združi v en Wordov dokument vabilo, osnutek zapisnika prejšnje seje, pregled realizacije sklepov, povzetek zadnje analize poslovanja in vprašanja za direktorja. Drugo gradivo (poročila, izkazi) priložite e-pošti kot doslej.</p>
   </section>
 
   <section class="panel">
     <div class="step"><span class="n">3</span><div><h2>Snemanje seje</h2><p class="small muted">Telefon ali računalnik položite na sredino mize.</p></div></div>
+    ${vIzbrisBanner(s)}
     <div id="recBox">${Rec.html()}</div>
     ${vPosnetki(s.id)}
     <details class="small"><summary style="cursor:pointer;font-weight:600">Brez Sonioxa: kako dobim prepis posnetka v Wordu</summary>
       <ol style="margin:8px 0 0;padding-left:20px;display:flex;flex-direction:column;gap:4px;max-width:75ch">
-        <li>Posnetek naložite v OneDrive (gumb zgoraj). Na računalniku je v mapi <strong>OneDrive – op-bertok → Aplikacije → Nadzorni svet → Posnetki</strong>.</li>
+        <li>Posnetek naložite v OneDrive (gumb zgoraj). Na računalniku je v mapi <strong>OneDrive → Aplikacije → Nadzorni svet → Posnetki</strong>.</li>
         <li>Na office.com odprite nov Wordov dokument, kliknite <strong>Narekuj → Prepis → Naloži zvok</strong> in izberite posnetek.</li>
         <li>Ko je prepis gotov, izberite <strong>Dodaj v dokument → S pogovorniki in časovnimi žigi</strong>, dokument shranite kot .docx in ga naložite spodaj.</li>
       </ol></details>
@@ -506,10 +509,11 @@ function vSeja(){
       ${predloge.length?`<div class="checks">${predloge.map(p=>`<label><input type="checkbox" id="pr-${p.id}" data-predloga="${p.id}" ${ui.izbranePredloge.includes(p.id)?"checked":""}>${esc(p.naziv)}</label>`).join("")}</div>`
       :`<span class="small">Ni naloženih preteklih zapisnikov. Brez njih bo osnutek v splošni obliki. <button class="btn ghost small" data-tab="predloge">Naloži pretekle zapisnike</button></span>`}</div>
     <div class="row">
-      <button class="btn primary ${busy.zapisnik?"busy":""}" data-act="zapisnik-pripravi" ${busy.zapisnik?"disabled":""}>${busy.zapisnik?"Pišem osnutek ":s.zapisnik?"Pripravi nov osnutek":"Pripravi osnutek zapisnika"}</button>
+      ${isLocked(s)?`<span class="chip good">Zapisnik potrjen · zaklenjen</span><button class="btn ghost ${ui.confirm==="odk"?"danger armed":""}" data-act="zapisnik-odkleni">${ui.confirm==="odk"?"Potrdite odklep":"Odkleni za popravek"}</button>`
+      :`<button class="btn primary ${busy.zapisnik?"busy":""}" data-act="zapisnik-pripravi" ${busy.zapisnik?"disabled":""}>${busy.zapisnik?"Pišem osnutek ":s.zapisnik?"Pripravi nov osnutek":"Pripravi osnutek zapisnika"}</button>`}
       ${busy.zapisnik?`<button class="btn" data-act="zapisnik-ustavi">Ustavi</button>`:""}
       ${s.zapisnik&&!busy.zapisnik?`<button class="btn" data-act="zapisnik-word">Prenesi Word</button><button class="btn ghost" data-act="kopiraj" data-id="f-zapisnik">Kopiraj</button><button class="btn ghost" data-act="zapisnik-predloga">Shrani kot predlogo</button>`:""}</div>
-    ${s.zapisnik||busy.zapisnik?`<textarea class="doc" id="f-zapisnik" data-f="zapisnik" ${busy.zapisnik?"readonly":""}>${esc(s.zapisnik)}</textarea>`:""}
+    ${s.zapisnik||busy.zapisnik?`<textarea class="doc" id="f-zapisnik" data-f="zapisnik" ${busy.zapisnik||isLocked(s)?"readonly":""}>${esc(s.zapisnik)}</textarea>`:""}
     ${s.zapisnik&&!busy.zapisnik?`<div class="panel" style="background:var(--sunk);border:0">
       <div class="panel-head"><h3>Sklepi v evidenco</h3><button class="btn ${busy.izlusci?"busy":""}" data-act="sklepi-izlusci" ${busy.izlusci?"disabled":""}>${busy.izlusci?"Iščem sklepe ":"Izlušči sklepe iz zapisnika"}</button></div>
       ${ui.manual&&ui.manual.kind==="sklepi"?manualBox():""}
@@ -798,7 +802,7 @@ ${s.zapisnik.slice(0,120000)}
 }
 
 function manualBox(){
-  const m=ui.manual;const what={zapisnik:"osnutek zapisnika",sklepi:"seznam sklepov",dir:"poročilo",fin:"podatki iz dokumenta"}[m.kind];
+  const m=ui.manual;const what={zapisnik:"osnutek zapisnika",sklepi:"seznam sklepov",dir:"poročilo",fin:"podatki iz dokumenta",vpr:"vprašanja za direktorja",por:"osnutek poročila skupščini"}[m.kind];
   return `<div class="panel" id="manualBox" style="background:var(--accent-soft);border:0">
     <h3>Pripravi s Claudom v vaši aplikaciji Claude</h3>
     <ol class="small" style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:3px">
@@ -815,6 +819,8 @@ function manualApply(){
   const m=ui.manual;const t=(($("#manualRes")||{}).value||"").trim();if(!t){toast("Najprej prilepite odgovor Claude.");return}
   if(m.kind==="zapisnik"){ui.draft.zapisnik=t.replace(/^#+\s*/gm,"").replace(/\*\*/g,"");ui.manual=null;render();toast("Osnutek je vstavljen. Preglejte ga in shranite sejo.");return}
   if(m.kind==="dir"){ui.dirPorocilo=t.replace(/\*\*/g,"");ui.manual=null;render();return}
+  if(m.kind==="vpr"){saveVprasanja(m.y,m.dm,t.replace(/\*\*/g,""));ui.manual=null;render();return}
+  if(m.kind==="por"){porSet(m.y,{besedilo:t.replace(/\*\*/g,"").replace(/^#+\s*/gm,"")});ui.manual=null;render();return}
   if(m.kind==="fin"){const mm=t.match(/\{[\s\S]*\}/);let j;try{j=JSON.parse(mm?mm[0]:t)}catch(e){toast("Odgovora ni bilo mogoče prebrati. Kopirajte celoten odgovor Claude.");return}const op=m.open;ui.manual=null;op(j);return}
   if(m.kind==="sklepi"){const mm=t.match(/[\[{][\s\S]*[\]}]/);let arr;try{arr=JSON.parse(mm?mm[0]:t)}catch(e){toast("Odgovora ni bilo mogoče prebrati. Kopirajte celoten odgovor Claude.");return}
     const s=ui.draft;ui.izlusceni=(Array.isArray(arr)?arr:[]).filter(k=>k&&k.besedilo).map(k=>({oznaka:String(k.oznaka||""),besedilo:String(k.besedilo),zadolzen:String(k.zadolzen||""),rok:/^\d{4}-\d{2}-\d{2}$/.test(k.rok||"")?k.rok:"",sel:!S.sklepi.some(x=>x.sejaId===s.id&&x.besedilo===k.besedilo)}));
@@ -931,7 +937,7 @@ function vSklepi(){
     <label class="fld">Poročilo o realizaciji<textarea id="sk-por" data-sk="porocilo" rows="2" placeholder="Kaj je bilo narejeno, kdaj in kdo je poročal">${esc(e.porocilo)}</textarea></label>
     <div class="row"><button class="btn primary" data-act="sklep-shrani">Shrani sklep</button><button class="btn ghost" data-act="sklep-preklici">Prekliči</button>
       ${e.id?`<button class="btn danger ${ui.confirm==="sk-"+e.id?"armed":""}" data-act="sklep-brisi" data-id="${e.id}" style="margin-left:auto">${ui.confirm==="sk-"+e.id?"Potrdite izbris":"Izbriši"}</button>`:""}</div></div>`:"";
-  return `<section class="panel"><div class="panel-head"><h2>Evidenca sklepov</h2><div class="row"><button class="btn" data-act="sklepi-word" ${S.sklepi.length?"":"disabled"}>Pregled realizacije (Word)</button><button class="btn primary" data-act="sklep-nov">Nov sklep</button></div></div>
+  return `<section class="panel"><div class="panel-head"><h2>Evidenca sklepov</h2><div class="row"><button class="btn" data-act="koledar">Roki v koledar (.ics)</button><button class="btn" data-act="sklepi-word" ${S.sklepi.length?"":"disabled"}>Pregled realizacije (Word)</button><button class="btn primary" data-act="sklep-nov">Nov sklep</button></div></div>
    <p class="lede">Sklepi se dodajo iz zapisnika seje ali ročno. Pregled realizacije lahko priložite gradivu za točko »Pregled realizacije sklepov«.</p>
    <div class="row">${[["odprti","Odprti",st.odprti],["zapadli","Rok pretekel",st.zapadli],["realizirani","Realizirani",st.realizirani],["vsi","Vsi",st.skupaj]].map(([k,l,n])=>`<button class="btn ${f===k?"primary":""}" data-act="filter" data-id="${k}">${l} <span class="num">${n}</span></button>`).join("")}</div>
    ${form}
@@ -996,6 +1002,7 @@ function vPoslovanje(){
       </div>
       ${chartGroups(P)}
       ${odstopanja(P)}
+      ${vVprasanja(y,P)}
       <div class="row" style="justify-content:space-between"><h3>Po postavkah</h3><button class="btn ghost" data-act="fin-vse">${all?"Pokaži samo skupine":"Pokaži vse postavke"}</button></div>
       <div class="tablewrap"><table><thead><tr><th>Postavka</th><th class="r">Letni plan</th><th class="r">Realizacija</th><th class="r">% plana</th><th class="r">Isto obdobje lani</th><th class="r">Indeks</th></tr></thead><tbody>
       ${rows.map(r=>{const lb=r.sek==="o";const v=r.plan?r.real/r.plan*100:null;const b=r.tip!=="p";
@@ -1106,6 +1113,7 @@ function vImport(){
       ${sh.kind==="obdobje"?`<label class="fld">Obdobje<select data-impf="do">${[1,2,3,4,5,6,7,8,9,10,11,12].map(m=>`<option value="${m}" ${sh.do===m?"selected":""}>${OBD_IME(m)}</option>`).join("")}</select></label>`:""}</div>
     <div class="fields">${sh.kind==="plan"?colSel("plan","Stolpec: plan tega leta")+colSel("planLani","Stolpec: plan lani")+colSel("lani","Stolpec: realizacija lani"):colSel("plan","Stolpec: letni plan")+colSel("real","Stolpec: realizacija obdobja")+colSel("lani","Stolpec: isto obdobje lani")}</div>
     <label class="fld">Obravnavano na seji (neobvezno)<select id="imp-seja"><option value="">–</option>${[...S.seje].sort((a,b)=>b.datum.localeCompare(a.datum)).map(s=>`<option value="${s.id}" ${im.sejaId===s.id?"selected":""}>${esc(s.stevilka)}. seja, ${esc(fmtDate(s.datum))}</option>`).join("")}</select></label>
+    ${(()=>{const ch=importChecks(sh,rows);return ch.notes.map((n,i)=>`<div class="note warn">${esc(n)}${i===0&&ch.remap?`<label style="display:flex;gap:6px;margin-top:6px"><input type="checkbox" id="imp-remap" ${im.remap!==false?"checked":""}> Primerjaj z veljavnim planom</label>`:""}</div>`).join("")})()}
     <p class="small"><strong>Predogled lista »${esc(sh.name)}«:</strong> ${rows.length} postavk · prihodki ${EUR(t.p)} · odhodki ${EUR(t.o)} · izid ${EUR(t.z)}</p>
     <div class="tablewrap" style="max-height:260px;overflow:auto"><table><thead><tr><th>Postavka</th>${sh.kind==="plan"?"<th class='r'>Plan</th><th class='r'>Plan lani</th><th class='r'>Real. lani</th>":"<th class='r'>Letni plan</th><th class='r'>Realizacija</th><th class='r'>Lani</th>"}</tr></thead><tbody>
     ${rows.map(r=>`<tr${r.tip!=="p"?` style="font-weight:600"`:""}><td>${r.sek==="p"?"<span class='chip good' style='margin-right:6px'>prihodek</span>":""}${esc(r.naziv)}</td>${(sh.kind==="plan"?["plan","planLani","lani"]:["plan","real","lani"]).map(k=>`<td class="r num">${EUR(r[k])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
@@ -1116,6 +1124,7 @@ function doImport(){
   im.sheets.filter(s=>s.sel).forEach(sh=>{const rows=sh.rows||sheetRows(sh);const y=+sh.leto;if(!y)return;
     const key=String(y);const doc=by[key]||(by[key]=strip(S.finance[key]||{}));doc.leto=y;doc.druzbaId=S.druzbaId;
     const meta={rows,vir:im.vir+" · list "+sh.name,uvozeno:new Date().toISOString(),sejaId:im.sejaId||""};
+    if(sh.kind!=="plan"&&im.remap!==false){const pd=doc.plan||(S.finance[key]||{}).plan;const ch=importChecks(sh,rows);if(ch.remap&&pd){meta.rows=remapToPlan(rows,pd).rows;meta.vir+=" (primerjano z veljavnim planom; direktorjev plan ohranjen)"}}
     if(sh.kind==="plan"){const old=doc.plan;
       if(old&&old.rows){const om={};old.rows.forEach(r=>om[normN(r.naziv)]=r);meta.rows=rows.map(r=>{const o=om[normN(r.naziv)];return o?{...r,lani:r.lani!=null?r.lani:(o.lani??null),planLani:r.planLani!=null?r.planLani:(o.planLani??null)}:r});
         if(old.vir!==meta.vir)meta.prejsnji={vir:old.vir,uvozeno:old.uvozeno,rows:old.rows}}
@@ -1256,7 +1265,8 @@ function vNastavitveSplosno(){
     :`<div class="row"><button class="btn primary" data-act="od-prijava" ${Sync.clientId()?"":"disabled"}>Prijava z Microsoftovim računom</button></div>
       ${Sync.clientId()?"":`<p class="small muted">Za prijavo potrebujete Client ID iz registracije aplikacije pri Microsoftu.</p>`}`}
     <details class="small" ${Sync.clientId()?"":"open"}><summary style="cursor:pointer">Napredno: Client ID</summary>
-      <div class="row" style="margin-top:8px"><input type="text" id="n-client" value="${esc(LS.get("clientId","")||"")}" placeholder="${esc((window.NS_CONFIG||{}).CLIENT_ID||"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")}" style="max-width:380px"><button class="btn" data-act="client-shrani">Shrani</button></div></details>
+      <div class="row" style="margin-top:8px"><input type="text" id="n-client" value="${esc(LS.get("clientId","")||"")}" placeholder="${esc((window.NS_CONFIG||{}).CLIENT_ID||"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")}" style="max-width:380px"><button class="btn" data-act="client-shrani">Shrani</button></div>
+      <label class="fld" style="margin-top:8px;max-width:380px">Imenik (domena službenega Microsoft 365, npr. podjetje.si)<input type="text" id="n-tenant" value="${esc(LS.get("tenant","")||"")}" placeholder="pusti prazno za osebni račun"></label></details>
   </section>
 
   <section class="panel"><h2>Claude</h2>
@@ -1311,6 +1321,219 @@ function importData(j){
   return n;
 }
 
+/* =========================================================
+   DODATKI: pametni uvoz, paket gradiva, vprašanja, izbris posnetkov,
+   zaklep zapisnika, poročilo skupščini, koledar
+   ========================================================= */
+const STOP=new Set(["za","in","na","s","z","do","od","ter","dejavnost","tekoči","tekoci","odpis","st","prom","storitve","pl","inv"]);
+const toks=s=>normN(s).split(" ").filter(w=>w&&!STOP.has(w));
+function simN(a,b){const A=new Set(toks(a)),B=new Set(toks(b));if(!A.size||!B.size)return 0;let n=0;A.forEach(x=>{if(B.has(x))n++});return n/Math.min(A.size,B.size)}
+/* Postavke analize poveže s postavkami veljavnega plana; vrne {rows, n, nUjem} */
+function remapToPlan(rows,planDoc){
+  const cur=(planDoc&&planDoc.rows)||[];if(!cur.length)return {rows,n:0};
+  const prej=(planDoc.prejsnji&&planDoc.prejsnji.rows)||[];
+  const byName=(r,list)=>list.find(x=>x.sek===r.sek&&normN(x.naziv)===normN(r.naziv));
+  const byFuzzy=(r,list)=>{let best=null,bs=0;list.forEach(x=>{if(x.sek!==r.sek||x.tip!==r.tip)return;const s=simN(r.naziv,x.naziv);if(s>bs){bs=s;best=x}});return bs>=0.5?best:null};
+  const seqMatch=(list)=>{let j=0;const m=new Map();rows.forEach(r=>{if(r.plan==null)return;for(let t=j;t<list.length;t++){const x=list[t];if(x.sek===r.sek&&x.plan!=null&&Math.abs(x.plan-r.plan)<0.5){m.set(r,x);j=t+1;return}}});return m};
+  const mPrej=prej.length?seqMatch(prej):new Map(),mCur=seqMatch(cur);let n=0;
+  const out=rows.map(r=>{let t=byName(r,cur)||mCur.get(r);
+    if(!t&&mPrej.get(r)){const p=mPrej.get(r);t=byName(p,cur)||byFuzzy(p,cur)}
+    if(!t)t=byFuzzy(r,cur);
+    const o={...r,planAnaliza:r.planAnaliza!=null?r.planAnaliza:r.plan};if(t){o.plan=t.plan;n++}else o.plan=null;return o});
+  return {rows:out,n};
+}
+/* opozorila pri uvozu obdobja */
+function importChecks(sh,rows){
+  const notes=[];if(sh.kind!=="obdobje")return {notes};
+  const y=+sh.leto,F=finDoc(y);const tA=rowTotals(rows,"plan");
+  let remap=false;
+  if(F&&F.plan){const tP=rowTotals(F.plan.rows,"plan");
+    if(tA.p!=null&&tP.p!=null&&(Math.abs(tA.p-tP.p)>0.5||Math.abs((tA.o||0)-(tP.o||0))>0.5)){remap=true;
+      notes.push(`Plan v analizi (prihodki ${EUR(tA.p)}, odhodki ${EUR(tA.o)}) se razlikuje od veljavnega plana ${y} (prihodki ${EUR(tP.p)}, odhodki ${EUR(tP.o)}). Pri uvozu se realizacija primerja z veljavnim planom, direktorjev plan pa se ohrani pri vsaki postavki.`)}}
+  const prev=finPeriods(y-1).find(p=>p.do===+sh.do);
+  if(prev){const a=rowTotals(rows,"lani"),b=rowTotals(prev.rows,"real");
+    if(a.p!=null&&b.p!=null&&(Math.abs(a.p-b.p)>0.5||Math.abs((a.o||0)-(b.o||0))>0.5))
+      notes.push(`Podatki za ${OBD_IME(+sh.do)} ${y-1} v tej analizi (prihodki ${EUR(a.p)}, odhodki ${EUR(a.o)}, izid ${EUR(a.z)}) se razlikujejo od lani uvožene realizacije (prihodki ${EUR(b.p)}, odhodki ${EUR(b.o)}, izid ${EUR(b.z)}). Lanski podatki so bili verjetno naknadno popravljeni – smiselno je vprašati direktorja.`)}
+  return {notes,remap};
+}
+
+/* ---------- skupni gradnik Worda (po predlogi, če obstaja) ---------- */
+const wBreak='<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
+function wHead(t,T){return zPara(zRuns(t,{b:true,u:!T||!T.head}),{style:T&&T.head||undefined})}
+function wTbl(rows,opt={}){
+  const n=rows[0].length;const b=`<w:tblBorders>${["top","left","bottom","right","insideH","insideV"].map(x=>`<w:${x} w:val="single" w:sz="4" w:space="0" w:color="999999"/>`).join("")}</w:tblBorders>`;
+  return `<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/>${b}<w:tblCellMar><w:left w:w="70" w:type="dxa"/><w:right w:w="70" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${Array(n).fill('<w:gridCol/>').join("")}</w:tblGrid>
+  ${rows.map((r,ri)=>`<w:tr>${r.map((c,ci)=>`<w:tc><w:tcPr>${ri===0?'<w:shd w:val="clear" w:color="auto" w:fill="E7ECE9"/>':""}</w:tcPr><w:p><w:pPr><w:spacing w:after="0"/>${ci>0&&opt.num?'<w:jc w:val="right"/>':""}</w:pPr>${zRuns(String(c??""),{b:ri===0||(opt.bold&&opt.bold(ri))}).replace(/<w:rPr>/g,'<w:rPr><w:sz w:val="18"/>')}</w:p></w:tc>`).join("")}</w:tr>`).join("")}</w:tbl><w:p/>`;
+}
+function textParas(text){return String(text||"").replace(/\r/g,"").split("\n").map(l=>{const t=l.trim();if(!t)return "<w:p/>";
+  const head=t.length<110&&/[A-ZČŠŽ]/.test(t)&&t===t.toUpperCase()&&!/^\d/.test(t);return zPara(zRuns(t,{b:head}),{jc:head?undefined:"both"})}).join("")}
+async function tplInfo(){const dr=S.druzba||{};if(!dr.wordPredloga||!window.JSZip)return null;
+  const zip=await JSZip.loadAsync(dr.wordPredloga,{base64:true});const x=await zip.file("word/document.xml").async("string");return {zip,T:analyseTpl(x)}}
+async function saveBodyDocx(filename,build){
+  const t=await tplInfo();
+  if(t){const body=build(t.T);t.zip.file("word/document.xml",t.T.root+"<w:body>"+body+t.T.sect+"</w:body></w:document>");
+    await saveFile(filename,await t.zip.generateAsync({type:"blob",mimeType:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}));return}
+  const T={head:null,drawing:null,labInd:'w:left="1416" w:hanging="1416"'};
+  await saveDocx(filename,build(T));
+}
+function letterhead(T){const d=druzba();const L=[d.naziv,"Nadzorni svet",...(d.naslov?d.naslov.split(/,\s*/):[])].filter(Boolean);
+  return L.map((l,i)=>zPara(zRuns(l,{b:true})+(i===1&&T.drawing?T.drawing:""))).join("")+"<w:p/><w:p/>"}
+
+/* ---------- 2: vprašanja za direktorja ---------- */
+function vprasanjaPrompt(y,P){
+  const f=finSum(y,P.do),d=druzba(),exp=P.do/12;
+  const odst=(P.rows||[]).filter(r=>r.tip==="p"&&r.plan>0&&r.real!=null).map(r=>({postavka:r.naziv,sekcija:r.sek==="p"?"prihodki":"odhodki",letni_plan:r.plan,realizacija:r.real,delez_plana_odst:Math.round(r.real/r.plan*1000)/10,isto_obdobje_lani:r.lani}))
+    .filter(x=>Math.abs(x.delez_plana_odst-exp*100)>15).sort((a,b)=>Math.abs(b.realizacija-b.letni_plan*exp)-Math.abs(a.realizacija-a.letni_plan*exp)).slice(0,15);
+  const prev=finPeriods(y-1).find(p=>p.do===P.do);const a=rowTotals(P.rows,"lani"),b=prev?rowTotals(prev.rows,"real"):null;
+  const F=finDoc(y);
+  return `Si izkušen član nadzornega sveta slovenske družbe ${d.naziv}. Na podlagi spodnjih podatkov o poslovanju za obdobje ${OBD_IME(P.do)} ${y} pripravi seznam konkretnih vprašanj, ki naj jih nadzorni svet zastavi direktorju${d.direktor?" ("+d.direktor+")":""} na seji.
+Pravila:
+- 8 do 15 vprašanj, oštevilčenih, vsako v eni ali dveh povedih, vljudno in stvarno, v knjižni slovenščini.
+- Najprej vprašanja o največjih odstopanjih od plana (z zneski in odstotki), nato o spremembah glede na lani, nato o morebitnih neskladjih v podatkih.
+- Pri vsakem vprašanju v oklepaju navedi podatek, na katerega se nanaša.
+- Ne izmišljuj podatkov; ne dodajaj uvodov ali zaključkov. Vrni samo seznam, brez markdown.
+
+Podatki:
+${JSON.stringify({obdobje:OBD_IME(P.do)+" "+y,pricakovani_delez_letnega_plana_odst:Math.round(exp*1000)/10,prihodki:{realizacija:f.pR,letni_plan:f.pPy,isto_obdobje_lani:f.pL},odhodki:{realizacija:f.oR,letni_plan:f.oPy,isto_obdobje_lani:f.oL},poslovni_izid:{realizacija:f.zR,sorazmerni_plan:f.zP,isto_obdobje_lani:f.zL},
+  vecja_odstopanja_po_postavkah:odst,
+  neskladje_lanskih_podatkov:b&&a.p!=null&&(Math.abs(a.p-b.p)>0.5||Math.abs((a.o||0)-(b.o||0))>0.5)?{v_tej_analizi:a,v_lanski_analizi:b}:null,
+  plan_spremenjen:F&&F.plan&&F.plan.prejsnji?{veljavni:rowTotals(F.plan.rows,"plan"),prejsnji:rowTotals(F.plan.prejsnji.rows,"plan"),vir:F.plan.vir}:null},null,1)}`;
+}
+function saveVprasanja(y,dm,text){const k=String(y);const doc=strip(S.finance[k]);if(!doc.obdobja||!doc.obdobja[dm])return;doc.obdobja[dm].vprasanja=text;doc.obdobja[dm].vprasanjaDatum=new Date().toISOString();write(fdPath("finance",y),doc)}
+async function pripraviVprasanja(){
+  const y=ui.leto,P=finSum(y,ui.obd||undefined).period;if(!P)return;const prompt=vprasanjaPrompt(y,P);
+  if(!LS.get("apiKey","")){ui.manual={kind:"vpr",prompt,result:"",y,dm:P.do};render();return}
+  ui.busy.vpr=true;render();
+  try{const r=await claude(prompt,{maxTokens:3000});saveVprasanja(y,P.do,r.text.trim());toast("Vprašanja so pripravljena.")}catch(e){toast(errMsg(e),6000)}
+  ui.busy.vpr=false;render();
+}
+function vVprasanja(y,P){
+  const has=P.vprasanja;
+  return `<div class="panel" style="background:var(--sunk);border:0"><div class="panel-head"><h3>Vprašanja za direktorja</h3>
+    <button class="btn ${ui.busy.vpr?"busy":""}" data-act="vpr-pripravi" ${ui.busy.vpr?"disabled":""}>${ui.busy.vpr?"Pripravljam ":has?"Pripravi znova":"Pripravi vprašanja"}</button></div>
+    ${ui.manual&&ui.manual.kind==="vpr"?manualBox():""}
+    ${has?`<textarea id="vpr-text" rows="10">${esc(P.vprasanja)}</textarea><p class="small muted">Vprašanja lahko urejate; shranijo se sama in so vključena v paket gradiva za sejo.</p>`
+    :`<p class="small muted">Claude iz te analize pripravi vprašanja o največjih odstopanjih, spremembah glede na lani in neskladjih v podatkih.</p>`}</div>`;
+}
+
+/* ---------- 1: paket gradiva za sejo ---------- */
+function latestPeriod(beforeDate){let best=null;Object.values(S.finance).forEach(F=>Object.values(F.obdobja||{}).forEach(p=>{
+  const k=F.leto*100+p.do;if(beforeDate&&p.uvozeno&&p.uvozeno.slice(0,10)>beforeDate)return;if(!best||k>best.k)best={k,y:F.leto,p}}));return best}
+async function paketGradiva(){
+  const s=ui.draft;const d=druzba();
+  const prev=[...S.seje].filter(x=>x.datum<s.datum&&x.id!==s.id).sort((a,b)=>b.datum.localeCompare(a.datum))[0];
+  const sk=S.sklepi.filter(k=>k.status!=="brezpredmeten"&&(isOpen(k)||(prev&&k.sejaId===prev.id))).sort((a,b)=>(a.rok||"9999").localeCompare(b.rok||"9999"));
+  const seje=Object.fromEntries(S.seje.map(x=>[x.id,x]));
+  const lp=latestPeriod();
+  await saveBodyDocx(fname(`Gradivo_${s.stevilka}_seja_NS_${s.datum}`)+".docx",T=>{
+    let b="";const vab=(s.vabilo||sestaviVabilo()).replace(/\r/g,"");const cut=vab.indexOf("\n\n");
+    b+=letterhead(T)+textParas(cut>0&&cut<300?vab.slice(cut+2):vab);
+    // kazalo
+    b+=wBreak+letterhead(T)+zPara(zRuns(`GRADIVO ZA ${s.stevilka}. SEJO NADZORNEGA SVETA`,{b:true}),{jc:"center"})+zPara(zRuns(fmtDateLong(s.datum)),{jc:"center"})+"<w:p/>";
+    const parts=[];if(prev&&prev.zapisnik)parts.push(`Osnutek zapisnika ${prev.stevilka}. seje NS`);parts.push("Pregled realizacije sklepov NS");if(lp)parts.push(`Povzetek poslovanja ${OBD_IME(lp.p.do)} ${lp.y}`);if(lp&&lp.p.vprasanja)parts.push("Vprašanja za direktorja");
+    parts.forEach((p,i)=>b+=zPara(zRuns(`${i+1}. ${p}`)));
+    if(prev&&prev.zapisnik){b+=wBreak+zapisnikBody(prev.zapisnik,T)}
+    b+=wBreak+wHead("PREGLED REALIZACIJE SKLEPOV NADZORNEGA SVETA",T)+zPara(zRuns("Stanje na dan "+fmtDate(today())))+"<w:p/>";
+    const st=sklepStats();b+=zPara(zRuns(`Odprtih ali v izvajanju: ${st.odprti}, od tega s preteklim rokom: ${st.zapadli}. Realiziranih skupaj: ${st.realizirani}.`),{jc:"both"});
+    b+=wTbl([["Oznaka","Sklep","Zadolžen","Rok","Status","Realizacija"],...sk.map(k=>[(k.oznaka||"")+(seje[k.sejaId]?` (${seje[k.sejaId].stevilka}. seja)`:""),k.besedilo,k.zadolzen||"",k.rok?fmtDate(k.rok):"",(SKLEP_ST[k.status]||SKLEP_ST.odprt)[0]+(isOverdue(k)?" – rok pretekel":""),k.porocilo||""])]);
+    if(lp){const P=lp.p,y=lp.y,f=finSum(y,P.do),exp=P.do/12*100;
+      b+=wBreak+wHead(`POVZETEK POSLOVANJA ${OBD_IME(P.do).toUpperCase()} ${y}`,T)+zPara(zRuns("Vir: "+(P.vir||"")))+"<w:p/>";
+      b+=zPara(zRuns(`Prihodki znašajo ${EUR(f.pR)}, kar je ${f.pPy?PCT(f.pR/f.pPy*100):"–"} letnega plana (pričakovano ${PCT(exp)}); indeks glede na isto obdobje lani je ${f.pL?PCT(f.pR/f.pL*100):"–"}. Odhodki znašajo ${EUR(f.oR)} oziroma ${f.oPy?PCT(f.oR/f.oPy*100):"–"} letnega plana. Poslovni izid znaša ${EUR(f.zR)} (sorazmerni plan ${EUR(f.zP)}, isto obdobje lani ${EUR(f.zL)}).`),{jc:"both"})+"<w:p/>";
+      const g=(P.rows||[]).filter(r=>r.tip==="s"||/amortizacij/i.test(r.naziv)||r.sek==="p");
+      b+=wTbl([["Postavka","Letni plan","Realizacija","% plana","Lani","Indeks"],...g.map(r=>[r.naziv,EUR(r.plan),EUR(r.real),r.plan&&r.real!=null?PCT(r.real/r.plan*100):"",EUR(r.lani),r.lani&&r.real!=null?PCT(r.real/r.lani*100):""])],{num:true,bold:ri=>g[ri-1]&&g[ri-1].tip==="s"});
+      const o=(P.rows||[]).filter(r=>r.tip==="p"&&r.sek==="o"&&r.plan>0&&r.real!=null&&r.real/r.plan>P.do/12*1.15).sort((a,c)=>(c.real-c.plan*P.do/12)-(a.real-a.plan*P.do/12)).slice(0,8);
+      if(o.length){b+=zPara(zRuns("Večja odstopanja pri odhodkih:",{b:true}));o.forEach(r=>b+=zPara(zRuns(`– ${r.naziv}: ${EUR(r.real)} = ${PCT(r.real/r.plan*100)} letnega plana`),{ind:'w:left="360"'}))}
+      if(P.vprasanja){b+=wBreak+wHead("VPRAŠANJA ZA DIREKTORJA",T)+zPara(zRuns(`Na podlagi analize poslovanja ${OBD_IME(P.do)} ${y}`))+"<w:p/>"+textParas(P.vprasanja)}
+    }
+    return b;});
+}
+
+/* ---------- 3 + 4: izbris posnetka po potrditvi, zaklep zapisnika ---------- */
+const isLocked=s=>s&&s.status==="potrjena"&&!!s.zapisnik&&!(ui.unlock||{})[s.id];
+function posnetekOstaja(s){const sv=S.seje.find(x=>x.id===s.id);return sv&&sv.status==="potrjena"&&(S.posnetki.some(p=>p.sejaId===s.id)||!!S.prepisi[s.id])}
+function vIzbrisBanner(s){if(!posnetekOstaja(s))return s.posnetekIzbrisan?`<p class="small muted">Posnetek in prepis sta bila izbrisana ${esc(fmtDate(s.posnetekIzbrisan.slice(0,10)))}.</p>`:"";
+  const n=S.posnetki.filter(p=>p.sejaId===s.id).length;
+  return `<div class="banner warn"><span><strong>Zapisnik je potrjen.</strong> V zapisniku je navedeno, da se posnetek po potrditvi trajno zbriše. Za to sejo še obstaja${n?` ${n} posnetek`:""}${n&&S.prepisi[s.id]?" in":""}${S.prepisi[s.id]?" prepis":""}.</span>
+    <button class="btn danger ${ui.confirm==="izbr-"+s.id?"armed":""}" data-act="izbrisi-posnetek" data-id="${s.id}">${ui.confirm==="izbr-"+s.id?"Potrdite trajni izbris":"Izbriši posnetek in prepis"}</button></div>`}
+async function izbrisiPosnetek(sid){
+  const ps=S.posnetki.filter(p=>p.sejaId===sid);let od=0,odNapaka=0;
+  for(const p of ps){await IDB.del("blobs",p.id).catch(()=>{});Rec.local.delete(p.id);
+    if(p.onedriveId&&Sync.account){try{const r=await Sync.graph(`/me/drive/items/${p.onedriveId}`,{method:"DELETE"});if(r.ok||r.status===404)od++;else odNapaka++}catch(e){odNapaka++}}
+    write("posnetki/"+p.id,null)}
+  if(S.prepisi[sid])write("prepisi/"+sid,null);
+  const sv=S.seje.find(x=>x.id===sid);if(sv)write("seje/"+sid,{...strip(sv),posnetekIzbrisan:new Date().toISOString()});
+  if(ui.sejaId===sid){ui.prepis="";ui.prepisSaved="";const n=S.seje.find(x=>x.id===sid);if(n&&!isDirty()){ui.draft=clone(n);ui._draftU=n._u}else if(ui.draft)ui.draft.posnetekIzbrisan=new Date().toISOString()}
+  toast(odNapaka?"Posnetek je izbrisan iz aplikacije, iz OneDriva pa ga ni bilo mogoče izbrisati – izbrišite ga ročno (Aplikacije → Nadzorni svet → Posnetki).":"Posnetek in prepis sta trajno izbrisana.",7000);render();
+}
+
+/* ---------- 5: poročilo NS skupščini ---------- */
+const porKey=y=>`${S.druzbaId}_${y}`;
+function porDoc(y){const r=(D.col.porocila||{})[porKey(y)];return r&&!r._d?r:{}}
+function porSet(y,patch){write("porocila/"+porKey(y),{...strip(porDoc(y)),...patch,leto:+y,druzbaId:S.druzbaId})}
+function porData(y){
+  const seje=S.seje.filter(s=>(s.datum||"").startsWith(String(y))).sort((a,b)=>a.datum.localeCompare(b.datum));
+  const ids=new Set(seje.map(s=>s.id));const sk=S.sklepi.filter(k=>ids.has(k.sejaId));
+  const f=finSum(y,12);const sc=dirScore(y);
+  return {seje,sk,f,sc};
+}
+function vPorocilo(){
+  const y=ui.porLeto||(new Date().getFullYear()-1);const P=porDoc(y);const {seje,sk,f,sc}=porData(y);const d=druzba();
+  const rok=P.prejeto?addDays(P.prejeto,30):null;const years=[...new Set([new Date().getFullYear()-2,new Date().getFullYear()-1,new Date().getFullYear(),...S.seje.map(s=>+String(s.datum).slice(0,4))])].filter(Boolean).sort();
+  return `<section class="panel"><div class="panel-head"><h2>Poročilo NS skupščini za leto ${y}</h2><label class="fld" style="flex-direction:row;align-items:center;gap:8px">Poslovno leto<select id="por-leto" style="width:auto">${years.map(x=>`<option ${x===y?"selected":""}>${x}</option>`).join("")}</select></label></div>
+    <p class="lede">Pisno poročilo o preveritvi letnega poročila (smiselno po 282. členu ZGD-1): kako in v kakšnem obsegu je NS med letom preverjal vodenje družbe, stališče do revizijskega poročila in ali NS letno poročilo potrjuje. NS ga mora izročiti v enem mesecu od prejema letnega poročila.</p>
+    <div class="stats"><div class="stat"><span class="v">${seje.length}</span><span class="l">sej v letu ${y}</span></div><div class="stat"><span class="v">${sk.length}</span><span class="l">sprejetih sklepov</span></div>
+      <div class="stat"><span class="v">${sk.filter(k=>k.status==="realiziran").length}</span><span class="l">realiziranih</span></div><div class="stat"><span class="v">${f.last===12?EUR(f.zR):"–"}</span><span class="l">poslovni izid ${y}${f.last===12?"":" (analiza za celo leto ni uvožena)"}</span></div></div>
+    <div class="fields"><label class="fld">Letno poročilo prejeto dne<input type="date" id="por-prejeto" data-por="prejeto" value="${esc(P.prejeto||"")}"></label>
+      <label class="fld">Rok za poročilo NS<input type="text" value="${rok?esc(fmtDate(rok)):"–"}" readonly></label>
+      <label class="fld">Letno poročilo<select data-por="potrditev" id="por-potrditev"><option value="">–</option><option value="da" ${P.potrditev==="da"?"selected":""}>NS ga potrjuje</option><option value="ne" ${P.potrditev==="ne"?"selected":""}>NS ga ne potrjuje</option></select></label></div>
+    ${rok&&today()>rok&&!P.besedilo?`<div class="note warn">Rok enega meseca od prejema letnega poročila je potekel ${esc(fmtDate(rok))}.</div>`:""}
+    <label class="fld">Revizija in stališče NS do revizijskega poročila<textarea id="por-revizija" data-por="revizija" rows="3" placeholder="npr. Letno poročilo ni predmet obvezne revizije. / Revizor X je izdal mnenje brez pridržka; NS nanj nima pripomb.">${esc(P.revizija||"")}</textarea></label>
+    <label class="fld">Predlog uporabe bilančnega dobička oziroma pokrivanja izgube<textarea id="por-dobicek" data-por="dobicek" rows="2">${esc(P.dobicek||"")}</textarea></label>
+    <label class="fld">Pripombe NS k letnemu poročilu in druge ugotovitve<textarea id="por-pripombe" data-por="pripombe" rows="3" placeholder="npr. ni pripomb; ali ugotovitve o odstopanjih, notranjih kontrolah …">${esc(P.pripombe||"")}</textarea></label>
+    <div class="row"><button class="btn primary ${ui.busy.por?"busy":""}" data-act="por-pripravi" ${ui.busy.por?"disabled":""}>${ui.busy.por?"Pišem osnutek ":P.besedilo?"Pripravi nov osnutek":"Pripravi osnutek poročila"}</button>
+      ${P.besedilo?`<button class="btn" data-act="por-word">Prenesi Word</button>`:""}</div>
+    ${ui.manual&&ui.manual.kind==="por"?manualBox():""}
+    ${P.besedilo||ui.busy.por?`<textarea class="doc" id="por-besedilo" data-por="besedilo">${esc(P.besedilo||"")}</textarea>`:""}
+    <p class="small muted">Osnutek temelji na sejah, sklepih in podatkih o poslovanju v aplikaciji. Kot pravni dokument ga pred izročitvijo skrbno preglejte; nejasna mesta so označena z [PREVERI].</p>
+  </section>`;
+}
+async function pripraviPorocilo(){
+  const y=ui.porLeto||(new Date().getFullYear()-1);const P=porDoc(y);const {seje,sk,f,sc}=porData(y);const d=druzba();
+  const dd=dirData(y);
+  const prompt=`Si pravnica, specializirana za gospodarsko pravo. Pripravi OSNUTEK POROČILA NADZORNEGA SVETA družbe ${d.naziv||"[PREVERI: naziv]"} skupščini (edinemu družbeniku oziroma družbenikom) o preveritvi letnega poročila za poslovno leto ${y}, smiselno skladno z 282. členom ZGD-1 (za d.o.o. v povezavi z 515. členom ZGD-1).
+Poročilo mora vsebovati: (1) sestavo nadzornega sveta; (2) kako in v kakšnem obsegu je NS med poslovnim letom preverjal vodenje družbe (seje, obravnavane vsebine, sprejeti sklepi in njihova realizacija, spremljanje poslovanja glede na plan); (3) preveritev letnega poročila in predloga uporabe bilančnega dobička; (4) stališče do revizijskega poročila, če je priloženo; (5) izjavo, ali ima NS po končni preveritvi k letnemu poročilu pripombe in ali ga potrjuje; (6) predlog sklepov skupščini (npr. o uporabi bilančnega dobička in podelitvi razrešnice direktorju in NS), kjer je smiselno.
+Uporabi samo spodnje podatke. Česar ni v podatkih, ne izmišljuj, ampak označi z [PREVERI: …]. Formalna knjižna slovenščina, navadno besedilo brez markdown, naslove razdelkov z VELIKIMI ČRKAMI v svoji vrstici. Na koncu kraj, datum in podpis predsednice NS (${predsednica()}).
+
+Podatki:
+${JSON.stringify({druzba:d.naziv,naslov:d.naslov,direktor:d.direktor,clani_NS:d.clani.filter(c=>c.ime),poslovno_leto:y,
+  seje:seje.map(s=>({stevilka:s.stevilka,datum:s.datum,vrsta:s.vrsta,status_zapisnika:SEJA_ST[s.status]?SEJA_ST[s.status][0]:s.status,tocke:(s.tocke||[]).map(t=>t.naslov)})),
+  sklepi:sk.map(k=>({oznaka:k.oznaka,besedilo:k.besedilo.slice(0,300),status:(SKLEP_ST[k.status]||SKLEP_ST.odprt)[0],realizacija:k.porocilo||""})),
+  poslovanje:f.last?{obdobje:OBD_IME(f.last),prihodki:f.pR,odhodki:f.oR,poslovni_izid:f.zR,letni_plan_prihodkov:f.pPy,letni_plan_odhodkov:f.oPy,lani:{prihodki:f.pL,odhodki:f.oL,izid:f.zL}}:"[ni podatkov]",
+  ocena_direktorja:sc!=null?{skupna_ocena_odst:Math.round(sc*10)/10,komentar_NS:dd.komentar||""}:null,
+  letno_porocilo_prejeto:P.prejeto||null,revizija:P.revizija||null,predlog_uporabe_dobicka:P.dobicek||null,pripombe_NS:P.pripombe||null,potrditev:P.potrditev==="da"?"NS letno poročilo potrjuje":P.potrditev==="ne"?"NS letnega poročila ne potrjuje":null},null,1)}`;
+  if(!LS.get("apiKey","")){ui.manual={kind:"por",prompt,result:"",y};render();return}
+  ui.busy.por=true;render();
+  try{const r=await claude(prompt,{maxTokens:8000,onText:({text})=>{const t=$("#por-besedilo");if(t)t.value=text}});porSet(y,{besedilo:r.text.trim()});toast("Osnutek poročila je pripravljen.")}
+  catch(e){toast(errMsg(e),6000)}
+  ui.busy.por=false;render();
+}
+
+/* ---------- 6: koledar (.ics) ---------- */
+function icsEsc(s){return String(s||"").replace(/\\/g,"\\\\").replace(/;/g,"\;").replace(/,/g,"\\,").replace(/\r?\n/g,"\\n")}
+function icsFold(l){const out=[];let s=l;while(s.length>72){out.push(s.slice(0,72));s=" "+s.slice(72)}out.push(s);return out.join("\r\n")}
+function koledar(){
+  const d=druzba();const now=new Date().toISOString().replace(/[-:]/g,"").replace(/\.\d+/,"");const t=today();const ev=[];
+  S.seje.filter(s=>s.datum>=t).forEach(s=>{const st=(s.datum+"T"+(s.ura||"13:00")).replace(/[-:]/g,"")+"00";const [h,m]=(s.ura||"13:00").split(":").map(Number);const en=s.datum.replace(/-/g,"")+"T"+String(Math.min(h+2,23)).padStart(2,"0")+String(m).padStart(2,"0")+"00";
+    ev.push(["BEGIN:VEVENT",`UID:seja-${s.id}@nadzorni-svet`,`DTSTAMP:${now}`,`DTSTART;TZID=Europe/Ljubljana:${st}`,`DTEND;TZID=Europe/Ljubljana:${en}`,`SUMMARY:${icsEsc(`${s.stevilka}. seja NS – ${d.naziv}`)}`,`LOCATION:${icsEsc(s.kraj)}`,`DESCRIPTION:${icsEsc((s.tocke||[]).map((x,i)=>`${i+1}. ${x.naslov}`).join("\n"))}`,"BEGIN:VALARM","ACTION:DISPLAY","DESCRIPTION:Seja NS","TRIGGER:-P1D","END:VALARM","END:VEVENT"])});
+  S.sklepi.filter(k=>isOpen(k)&&k.rok).forEach(k=>{const dt=k.rok.replace(/-/g,"");const nx=addDays(k.rok,1).replace(/-/g,"");
+    ev.push(["BEGIN:VEVENT",`UID:sklep-${k.id}@nadzorni-svet`,`DTSTAMP:${now}`,`DTSTART;VALUE=DATE:${dt}`,`DTEND;VALUE=DATE:${nx}`,`SUMMARY:${icsEsc(`Rok sklepa ${k.oznaka||""} – ${trunc(k.besedilo,60)}`)}`,`DESCRIPTION:${icsEsc(`${d.naziv}\n${k.besedilo}\nZadolžen: ${k.zadolzen||"-"}`)}`,"BEGIN:VALARM","ACTION:DISPLAY","DESCRIPTION:Rok sklepa NS","TRIGGER:-P1D","END:VALARM","END:VEVENT"])});
+  if(!ev.length){toast("Ni prihodnjih sej ali odprtih sklepov z rokom.");return}
+  const tz=["BEGIN:VTIMEZONE","TZID:Europe/Ljubljana","BEGIN:DAYLIGHT","TZOFFSETFROM:+0100","TZOFFSETTO:+0200","TZNAME:CEST","DTSTART:19700329T020000","RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU","END:DAYLIGHT","BEGIN:STANDARD","TZOFFSETFROM:+0200","TZOFFSETTO:+0100","TZNAME:CET","DTSTART:19701025T030000","RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU","END:STANDARD","END:VTIMEZONE"];
+  const txt=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Nadzorni svet//SL","CALSCALE:GREGORIAN",...tz,...ev.flat(),"END:VCALENDAR"].map(icsFold).join("\r\n");
+  saveFile(fname(`Koledar_NS_${d.naziv||"druzba"}`)+".ics",new Blob([txt],{type:"text/calendar"}));
+  toast(`V koledar: ${ev.length} dogodkov. Na iPhonu izberite »Dodaj vse«; na računalniku odprite datoteko v Outlooku.`,7000);
+}
+
 /* ---------- dogodki ---------- */
 document.addEventListener("click",ev=>{
   const b=ev.target.closest("[data-act],[data-tab]");if(!b||b.disabled)return;
@@ -1337,6 +1560,14 @@ async function act(a,id){
     case "vabilo-word":saveDocx(fname(`Vabilo_${s.stevilka}_seja_NS_${s.datum}`)+".docx",textToW(s.vabilo));break;
     case "zapisnik-word":saveZapisnikDocx(fname(`Zapisnik_${s.stevilka}_seja_NS_${s.datum}`)+".docx",s.zapisnik).catch(e=>toast("Izvoz ni uspel: "+(e.message||e),6000));break;
     case "kopiraj":{const t=document.getElementById(id);if(!t)break;try{await navigator.clipboard.writeText(t.value);toast("Besedilo je kopirano.")}catch(e){t.focus();t.select();toast("Besedilo je označeno – kopirajte ga.")}break}
+    case "vpr-pripravi":await pripraviVprasanja();break;
+    case "paket":try{await paketGradiva()}catch(e){toast("Paketa ni bilo mogoče pripraviti: "+(e.message||e),6000)}break;
+    case "izbrisi-posnetek":if(arm("izbr-"+id))await izbrisiPosnetek(id);break;
+    case "zapisnik-odkleni":if(arm("odk")){ui.unlock=ui.unlock||{};ui.unlock[ui.sejaId]=true;toast("Zapisnik je odklenjen za popravek. Spremembe shranite s Shrani sejo.",5000);render()}break;
+    case "por-pripravi":await pripraviPorocilo();break;
+    case "por-word":{const y=ui.porLeto||(new Date().getFullYear()-1);const t=(($("#por-besedilo")||{}).value)||porDoc(y).besedilo||"";
+      saveBodyDocx(fname(`Porocilo_NS_skupscini_${y}`)+".docx",T=>letterhead(T)+textParas(t)).catch(e=>toast("Izvoz ni uspel: "+(e.message||e)));break}
+    case "koledar":koledar();break;
     case "pravila-shrani":{const v=($("#seja-pravila").value||"").trim();write("druzbe/"+S.druzbaId,{...strip(S.druzba),pravila:v});toast("Pravila so shranjena.");render();break}
     case "zapisnik-predloga":{const t=(s.zapisnik||"").trim();if(!t)break;const naziv=`Zapisnik ${s.stevilka}. seje, ${fmtDate(s.datum)}`;
       const ex=S.predloge.find(p=>p.sejaId===ui.sejaId);write("predloge/"+(ex?ex.id:uid()),{naziv,besedilo:t.slice(0,MAXC),datum:new Date().toISOString(),sejaId:ui.sejaId});
@@ -1416,7 +1647,7 @@ async function act(a,id){
     case "od-prijava":Sync.login();break;
     case "od-odjava":Sync.logout();break;
     case "od-sync":Sync.run();break;
-    case "client-shrani":{LS.set("clientId",$("#n-client").value.trim());toast("Client ID je shranjen.");Sync.msal=null;await Sync.init();render();break}
+    case "client-shrani":{LS.set("clientId",$("#n-client").value.trim());LS.set("tenant",(($("#n-tenant")||{}).value||"").trim());toast("Client ID je shranjen.");Sync.msal=null;await Sync.init();render();break}
     case "key-shrani":LS.set("apiKey",$("#n-key").value.trim());LS.set("model",$("#n-model").value);toast("Nastavitve za Claude so shranjene.");render();break;
     case "key-test":{ui.busy.key=true;render();try{await claude("Odgovori samo z besedo: deluje",{maxTokens:10,model:"claude-haiku-5-5"});toast("Ključ deluje.")}catch(e){toast(errMsg(e),6000)}ui.busy.key=false;render();break}
     case "sx-shrani":LS.set("sonioxKey",$("#n-sxkey").value.trim());LS.set("sonioxModel",$("#n-sxmodel").value.trim()||"stt-rt-v6");LS.set("sonioxOn",$("#n-sxon").checked);LS.set("sonioxLegacy",false);toast("Nastavitve za Soniox so shranjene.");render();break;
@@ -1433,6 +1664,8 @@ document.addEventListener("input",ev=>{
   if(ui.sklepEdit&&el.dataset.sk){ui.sklepEdit[el.dataset.sk]=el.value;return}
   if(el.id==="dir-kom"){const v=el.value;clearTimeout(ui._komT);ui._komT=setTimeout(()=>dirSet(ui.leto,d=>{d.komentar=v}),600);return}
   if(el.id==="dir-por"){ui.dirPorocilo=el.value;return}
+  if(el.id==="vpr-text"){const v=el.value,y=ui.leto,P=finSum(y,ui.obd||undefined).period;clearTimeout(ui._vprT);if(P)ui._vprT=setTimeout(()=>saveVprasanja(y,P.do,v),700);return}
+  if(el.dataset.por){const k=el.dataset.por,v=el.value,y=ui.porLeto||(new Date().getFullYear()-1);clearTimeout(ui._porT);ui._porT=setTimeout(()=>porSet(y,{[k]:v}),600);return}
   if(el.id==="manualRes"&&ui.manual){ui.manual.result=el.value;return}
 });
 document.addEventListener("change",async ev=>{
@@ -1443,6 +1676,8 @@ document.addEventListener("change",async ev=>{
   if(el.dataset.izl!=null){ui.izlusceni[+el.dataset.izl].sel=el.checked;return}
   if(el.dataset.statusId){const sk=S.sklepi.find(x=>x.id===el.dataset.statusId);if(sk){write("sklepi/"+sk.id,{...strip(sk),status:el.value});toast("Status sklepa je posodobljen.")}return}
   if(el.id==="leto"){ui.leto=+el.value;ui.obd=null;ui.dirPorocilo="";render();return}
+  if(el.id==="por-leto"){ui.porLeto=+el.value;ui.manual=null;render();return}
+  if(el.id==="imp-remap"){ui.imp.remap=el.checked;return}
   if(el.id==="finFile"&&el.files&&el.files[0]){try{await readExcel(el.files[0])}catch(e){toast("Uvoz ni uspel: "+(e.message||e),6000)}el.value="";return}
   if(el.id==="finDocFile"&&el.files&&el.files[0]){const f=el.files[0];el.value="";await finFromDoc(f);return}
   if(el.dataset.impsel!=null){ui.imp.sheets[+el.dataset.impsel].sel=el.checked;render();return}
@@ -1476,7 +1711,7 @@ window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();installEvt=
 setInterval(()=>{if(document.visibilityState==="visible")Sync.run()},5*60*1000);
 
 /* ---------- zagon ---------- */
-const h=(location.hash||"").slice(1);if(["pregled","seje","sklepi","poslovanje","direktor","predloge","nastavitve"].includes(h))ui.tab=h;
+const h=(location.hash||"").slice(1);if(["pregled","seje","sklepi","poslovanje","direktor","predloge","porocilo","nastavitve"].includes(h))ui.tab=h;
 (async function init(){
   try{const saved=await IDB.get("kv","data");if(saved&&saved.col){D=saved;COLS.forEach(c=>D.col[c]=D.col[c]||{})}}catch(e){toast("Shramba na napravi ni na voljo – podatki se ne bodo ohranili.",8000)}
   migrateV1();derive();render();paintConn();

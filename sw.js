@@ -1,5 +1,5 @@
 // Service worker: aplikacija deluje tudi brez povezave.
-const VERSION = "nadzorni-svet-v5";
+const VERSION = "nadzorni-svet-v6";
 const SHELL = [
   "./", "./index.html", "./app.js", "./config.js", "./manifest.webmanifest",
   "./msal-browser.min.js", "./jszip.min.js", "./mammoth.browser.min.js", "./xlsx.full.min.js",

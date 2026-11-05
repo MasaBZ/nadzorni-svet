@@ -25,12 +25,12 @@ Aplikacija deluje na računalniku (Windows: Edge ali Chrome) in na iPhonu (Safar
 Javna je samo prazna aplikacija. Vaši podatki niso na GitHubu.
 
 ### 2. Registracija aplikacije pri Microsoftu (za OneDrive)
-Aplikacija uporablja službeni račun **masa@op-bertok.si** (Microsoft 365 imenik op-bertok.si).
+Aplikacija uporablja vaš službeni Microsoft 365 račun.
 1. S službenim računom se prijavite na entra.microsoft.com (ali portal.azure.com) in odprite **Identity → Applications → App registrations → New registration**.
-2. Ime: `Nadzorni svet`. Vrsta računov: **Accounts in this organizational directory only (op-bertok.si only – Single tenant)**.
+2. Ime: `Nadzorni svet`. Vrsta računov: **Accounts in this organizational directory only (Single tenant)**.
 3. Redirect URI: izberite **Single-page application (SPA)** in vpišite naslov iz koraka 1, npr. `https://VAŠE-UPORABNIŠKO-IME.github.io/nadzorni-svet/` (s poševnico na koncu).
 4. Kliknite **Register** in skopirajte **Application (client) ID**.
-5. V aplikaciji odprite **Nastavitve → OneDrive → Napredno: Client ID**, ga prilepite in shranite. Nato kliknite **Prijava z Microsoftovim računom** in se prijavite z masa@op-bertok.si. Ob prvi prijavi potrdite dovoljenje za dostop do mape aplikacije v OneDrivu.
+5. V aplikaciji odprite **Nastavitve → OneDrive → Napredno**, prilepite Client ID, vpišite domeno imenika in shranite. Nato kliknite **Prijava z Microsoftovim računom** in se prijavite s službenim računom. Ob prvi prijavi potrdite dovoljenje za dostop do mape aplikacije v OneDrivu.
 
 Podatki se shranjujejo v vaš službeni OneDrive, v mapo **Aplikacije → Nadzorni svet** (v angleškem vmesniku *Apps → Nadzorni svet*).
 
