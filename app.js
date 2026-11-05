@@ -845,6 +845,71 @@ async function saveDocx(filename,bodyXml){
   const blob=await zip.generateAsync({type:"blob",mimeType:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
   await saveFile(filename,blob);
 }
+/* ---------- Word po predlogi (oblika preteklih zapisnikov) ---------- */
+const tplParas=x=>{const b=x.slice(x.indexOf("<w:body>")+8,x.lastIndexOf("</w:body>"));return b.match(/<w:p[ >][\s\S]*?<\/w:p>|<w:p\/>|<w:tbl>[\s\S]*?<\/w:tbl>/g)||[]};
+const pText=p=>(p.match(/<w:t[^>]*>[^<]*<\/w:t>/g)||[]).map(t=>t.replace(/<[^>]+>/g,"")).join("").replace(/&amp;/g,"&");
+const pAttr=(p,re)=>{const m=p.match(re);return m?m[1]:null};
+function analyseTpl(x){
+  const ps=tplParas(x).filter(p=>!p.startsWith("<w:tbl"));const info={numDR:null,numG:null,numSub:null,subStyle:null,head:null,labInd:'w:left="1416" w:hanging="1416"',drawing:null};
+  const num=p=>pAttr(p,/<w:numId w:val="(\d+)"/);
+  let inDR=false;
+  ps.forEach((p,i)=>{const t=pText(p).trim();
+    if(!info.drawing&&/<w:drawing>|<w:pict>/.test(p)){const r=p.match(/<w:r>(?:(?!<\/w:r>)[\s\S])*?(?:<w:drawing>|<w:pict>)[\s\S]*?<\/w:r>/);if(r)info.drawing=r[0]}
+    if(/dnevn\w* red/i.test(t)&&!num(p)){inDR=true;return}
+    if(inDR&&num(p)&&!info.numDR){info.numDR=num(p);inDR=false}
+    if(/^Gradivo pod to/i.test(t)&&num(p)&&!info.numG)info.numG=num(p);
+    if(info.numG&&!info.numSub&&num(p)&&num(p)!==info.numG&&num(p)!==info.numDR&&i>0&&/^Gradivo pod to/i.test(pText(ps[i-1]).trim())){info.numSub=num(p)}
+    if(!info.subStyle&&info.numSub&&num(p)===info.numSub)info.subStyle=pAttr(p,/<w:pStyle w:val="([^"]+)"/);
+    if(!info.head&&/^Ad\s*\d/i.test(t))info.head=pAttr(p,/<w:pStyle w:val="([^"]+)"/);
+    if(/^Prisotni/i.test(t)){const m=p.match(/<w:ind ([^/]*)\/>/);if(m)info.labInd=m[1]}
+  });
+  info.sect=(x.match(/<w:sectPr[\s\S]*<\/w:sectPr>(?=\s*<\/w:body>)/)||[""])[0];
+  info.root=x.slice(0,x.indexOf("<w:body>"));
+  return info;
+}
+function zRuns(t,o={}){ // besedilo -> runs, [PREVERI] rumeno označeno
+  const rp=x=>`<w:rPr>${o.b?"<w:b/><w:bCs/>":""}${o.i?"<w:i/><w:iCs/>":""}${o.u?'<w:u w:val="single"/>':""}${x?'<w:highlight w:val="yellow"/>':""}</w:rPr>`;
+  return String(t).split(/(\[PREVERI[^\]]*\])/).filter(Boolean).map(s=>`<w:r>${rp(/^\[PREVERI/.test(s))}<w:t xml:space="preserve">${xmlEsc(s)}</w:t></w:r>`).join("");
+}
+function zPara(inner,o={}){return `<w:p><w:pPr>${o.style?`<w:pStyle w:val="${o.style}"/>`:""}${o.num?`<w:numPr><w:ilvl w:val="0"/><w:numId w:val="${o.num}"/></w:numPr>`:""}${o.ind?`<w:ind ${o.ind}/>`:""}${o.jc?`<w:jc w:val="${o.jc}"/>`:""}</w:pPr>${inner}</w:p>`}
+function zapisnikBody(text,T){
+  const L=String(text||"").replace(/\r/g,"").split("\n").map(l=>l.replace(/\s+$/,""));const out=[];
+  let mode="head",hn=0,blockSklep=false,headDone=false;
+  for(let i=0;i<L.length;i++){
+    const raw=L[i],t=raw.trim().replace(/^\*\*|\*\*$/g,"").replace(/^#+\s*/,"");
+    if(!t){out.push("<w:p/>");blockSklep=false;if(mode==="dr"||mode==="gr")mode="body";continue}
+    if(mode==="head"){
+      if(/^ZAPISNIK\b/i.test(t)){mode="center";let k=0;for(let j=out.length-1;j>=0&&out[j]==="<w:p/>";j--)k++;for(;k<5;k++)out.push("<w:p/>");out.push(zPara(zRuns(t,{b:true}),{jc:"center"}));continue}
+      hn++;out.push(zPara(zRuns(t,{b:true})+(hn===2&&T.drawing?T.drawing:""),{}));continue}
+    let m;
+    if(mode==="center"&&!/^(Prisotni|Odsotni|Vabljeni)\b/i.test(t)){
+      if((m=t.match(/^(ki je bila\s+)(.*)$/i)))out.push(zPara(zRuns(m[1])+zRuns(m[2],{b:true}),{jc:"center"}));
+      else out.push(zPara(zRuns(t),{jc:"center"}));continue}
+    if(mode==="center")mode="body";
+    if((m=t.match(/^(Prisotni|Odsotni|Vabljeni|Zapisnikar\w*|Ostali prisotni|Drugi prisotni)\s*:\s*(.*)$/i))){out.push(zPara(zRuns(m[1]+":",{b:true})+"<w:r><w:tab/></w:r>"+zRuns(m[2]),{ind:T.labInd}));continue}
+    if(/^(Predlog\s+)?dnevn\w* red\w*\s*:?$/i.test(t)){mode="dr";out.push(zPara(zRuns(t,{b:true,u:true})));continue}
+    if(/^Gradivo\s*:?$/i.test(t)){mode="gr";out.push(zPara(zRuns(t,{b:true})));continue}
+    if(mode==="dr"){const x=t.replace(/^\d+\s*[\.\)]\s*/,"");out.push(T.numDR?zPara(zRuns(x),{num:T.numDR}):zPara(zRuns(t)));continue}
+    if(mode==="gr"){if(/^[-–•]?\s*Gradivo pod to/i.test(t)){const x=t.replace(/^[-–•]\s*/,"");out.push(T.numG?zPara(zRuns(x),{num:T.numG}):zPara(zRuns(x)));}
+      else{const x=t.replace(/^[-–•]\s*/,"");out.push(T.numSub?zPara(zRuns(x),{num:T.numSub,style:T.subStyle}):zPara(zRuns("– "+x),{ind:'w:left="1416"'}));}continue}
+    if((m=t.match(/^(AD|Ad|K točki)\s*(\d+)\s*[\.:\-–]?\s*(.*)$/))){out.push(zPara(zRuns(`Ad ${m[2]}`,{u:true})+"<w:r><w:rPr><w:u w:val=\"single\"/></w:rPr><w:tab/></w:r>"+zRuns(m[3],{u:true}),{style:T.head||undefined,jc:"both"}));continue}
+    if((m=t.match(/^((?:PREDLOG\s+)?SKLEP(?:A)?\s*(?:ŠT\.?\s*)?[\d\.\/]*\s*:?)\s*(.*)$/i))&&/^(predlog\s+)?sklep/i.test(t)&&t.length<200&&/^[A-ZČŠŽ\s\.\d\/:]+$/.test(m[1])){
+      out.push(zPara(zRuns(m[1].trim(),{b:true,i:true,u:true}),{jc:"both"}));blockSklep=true;if(m[2])out.push(zPara(zRuns(m[2],{b:true,i:true}),{jc:"both"}));continue}
+    if(blockSklep){out.push(zPara(zRuns(t,{b:true,i:true}),{jc:"both"}));continue}
+    out.push(zPara(zRuns(t),{jc:"both"}));
+  }
+  return out.join("");
+}
+async function saveZapisnikDocx(filename,text){
+  const dr=S.druzba||{};
+  if(!dr.wordPredloga||!window.JSZip){await saveDocx(filename,textToW(text));if(!dr.wordPredloga)toast("Za videz kot vaši dosedanji zapisniki naložite Wordovo predlogo v Nastavitvah družbe.",6000);return}
+  const zip=await JSZip.loadAsync(dr.wordPredloga,{base64:true});
+  const x=await zip.file("word/document.xml").async("string");const T=analyseTpl(x);
+  zip.file("word/document.xml",T.root+"<w:body>"+zapisnikBody(text,T)+T.sect+"</w:body></w:document>");
+  const blob=await zip.generateAsync({type:"blob",mimeType:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
+  await saveFile(filename,blob);
+}
+
 const fname=s=>s.replace(/[\\/:*?"<>|]+/g,"").replace(/\s+/g,"_");
 
 /* ---------- SKLEPI ---------- */
@@ -1162,6 +1227,9 @@ function vNastavitve(){
     <div class="fields"><label class="fld">Direktor<input type="text" id="n-direktor" value="${esc(d.direktor)}"></label><label class="fld">Običajni kraj sej<input type="text" id="n-kraj" value="${esc(d.kraj)}" placeholder="npr. sejna soba na sedežu družbe"></label></div>
     <h3>Člani nadzornega sveta</h3>
     ${d.clani.map((c,i)=>`<div class="fields"><label class="fld">Ime in priimek<input type="text" id="n-cl-ime-${i}" value="${esc(c.ime)}"></label><label class="fld">Funkcija<input type="text" id="n-cl-fun-${i}" value="${esc(c.funkcija)}"></label></div>`).join("")}
+    <div class="fld"><span>Wordova predloga za zapisnik</span><div class="row">${(S.druzba||{}).wordPredloga?`<span class="chip good">${esc(S.druzba.wordPredlogaIme||"naložena")}</span><button class="btn ghost small ${ui.confirm==="pw"?"danger armed":""}" data-act="predloga-word-brisi">${ui.confirm==="pw"?"Potrdite":"Odstrani"}</button>`:`<span class="small muted">ni naložena</span>`}
+      <label class="btn" for="wordTplFile">${(S.druzba||{}).wordPredloga?"Zamenjaj":"Naloži"} (.docx)</label><input type="file" id="wordTplFile" accept=".docx" hidden></div>
+      <span class="small muted">Naložite enega od svojih dosedanjih zapisnikov. Aplikacija iz njega prevzame glavo z logotipom, pisavo, naslove točk, oštevilčenje, nogo in robove; vsebina se ne uporabi.</span></div>
     <label class="fld">Moja pravila za zapisnik (vsako pravilo v svojo vrstico)<textarea id="n-pravila" rows="4" placeholder="npr. Sklepe označi kot »Sklep št. 12/3«.&#10;Razpravo pri vsaki točki povzemi v največ treh stavkih.&#10;Na koncu navedi uro zaključka seje.">${esc(d.pravila)}</textarea></label>
     <div class="row"><button class="btn primary" data-act="nastavitve-shrani">Shrani podatke družbe</button></div>
   </section>`+vNastavitveSplosno();
@@ -1255,7 +1323,7 @@ async function act(a,id){
     case "tocka-dol":{const i=+id;[s.tocke[i+1],s.tocke[i]]=[s.tocke[i],s.tocke[i+1]];render();break}
     case "vabilo-sestavi":s.vabilo=sestaviVabilo();render();break;
     case "vabilo-word":saveDocx(fname(`Vabilo_${s.stevilka}_seja_NS_${s.datum}`)+".docx",textToW(s.vabilo));break;
-    case "zapisnik-word":saveDocx(fname(`Zapisnik_${s.stevilka}_seja_NS_${s.datum}`)+".docx",textToW(s.zapisnik));break;
+    case "zapisnik-word":saveZapisnikDocx(fname(`Zapisnik_${s.stevilka}_seja_NS_${s.datum}`)+".docx",s.zapisnik).catch(e=>toast("Izvoz ni uspel: "+(e.message||e),6000));break;
     case "kopiraj":{const t=document.getElementById(id);if(!t)break;try{await navigator.clipboard.writeText(t.value);toast("Besedilo je kopirano.")}catch(e){t.focus();t.select();toast("Besedilo je označeno – kopirajte ga.")}break}
     case "pravila-shrani":{const v=($("#seja-pravila").value||"").trim();write("druzbe/"+S.druzbaId,{...strip(S.druzba),pravila:v});toast("Pravila so shranjena.");render();break}
     case "zapisnik-predloga":{const t=(s.zapisnik||"").trim();if(!t)break;const naziv=`Zapisnik ${s.stevilka}. seje, ${fmtDate(s.datum)}`;
@@ -1326,7 +1394,8 @@ async function act(a,id){
     case "predloga-brisi":if(arm("p-"+id)){write("predloge/"+id,null);render()}break;
     case "nastavitve-shrani":{const cur=druzba();const d={pravila:(($("#n-pravila")||{}).value||"").trim(),naziv:$("#n-naziv").value.trim()||cur.naziv,naslov:$("#n-naslov").value.trim(),direktor:$("#n-direktor").value.trim(),kraj:$("#n-kraj").value.trim(),
       clani:cur.clani.map((c,i)=>({ime:$("#n-cl-ime-"+i).value.trim(),funkcija:$("#n-cl-fun-"+i).value.trim()}))};
-      write("druzbe/"+S.druzbaId,d);toast("Podatki družbe so shranjeni.");render();break}
+      write("druzbe/"+S.druzbaId,{...strip(S.druzba||{}),...d});toast("Podatki družbe so shranjeni.");render();break}
+    case "predloga-word-brisi":if(arm("pw")){const r=strip(S.druzba);delete r.wordPredloga;delete r.wordPredlogaIme;write("druzbe/"+S.druzbaId,r);render()}break;
     case "druzba-dodaj":{const n=(($("#nd-naziv")||{}).value||"").trim();if(!n){toast("Vpišite naziv družbe.");break}const nid=uid();write("druzbe/"+nid,{naziv:n,clani:[{ime:"",funkcija:"predsednica"},{ime:"",funkcija:"namestnik predsednice"},{ime:"",funkcija:"član"}]});setDruzba(nid);ui.tab="nastavitve";render();toast("Družba "+n+" je dodana. Dopolnite podatke in člane NS.");break}
     case "druzba-preklopi":setDruzba(id);break;
     case "druzba-brisi":if(arm("dr-"+id)){const now=Date.now();
@@ -1378,6 +1447,10 @@ document.addEventListener("change",async ev=>{
   if(el.id==="predlogaFile"&&el.files){let n=0;for(const f of el.files){try{const t=(await readFileText(f)).trim();if(t.length>MAXC)toast(f.name+": skrajšano na prvih "+NUM.format(MAXC)+" znakov.");
       write("predloge/"+uid(),{naziv:f.name.replace(/\.[^.]+$/,""),besedilo:t.slice(0,MAXC),datum:new Date().toISOString()});n++}catch(e){toast("Branje ni uspelo: "+(e.message||e))}}
     el.value="";if(n)toast(`Dodanih ${n} zapisnikov.`);render();return}
+  if(el.id==="wordTplFile"&&el.files&&el.files[0]){const f=el.files[0];el.value="";if(!/\.docx$/i.test(f.name)){toast("Izberite datoteko .docx.");return}
+    const b64=await new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(String(fr.result).split(",")[1]);fr.onerror=rej;fr.readAsDataURL(f)});
+    try{const z=await JSZip.loadAsync(b64,{base64:true});if(!z.file("word/document.xml"))throw 0}catch(e){toast("Datoteke ni mogoče prebrati kot Wordov dokument.");return}
+    write("druzbe/"+S.druzbaId,{...strip(S.druzba||{}),wordPredloga:b64,wordPredlogaIme:f.name});toast("Wordova predloga je shranjena.");return}
   if(el.id==="uvozFile"&&el.files&&el.files[0]){try{const n=importData(JSON.parse(await el.files[0].text()));toast(`Uvoženih ${n} zapisov.`)}catch(e){toast("Uvoz ni uspel: "+(e.message||e),6000)}el.value="";return}
 });
 window.addEventListener("beforeunload",e=>{persistNow();if(Rec.active){e.preventDefault();e.returnValue=""}});
