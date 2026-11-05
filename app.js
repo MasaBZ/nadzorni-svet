@@ -328,7 +328,7 @@ function finSum(y,doMes){
   return o;
 }
 function planFor(y,naziv){const F=finDoc(y);if(!F||!F.plan)return null;const n=normN(naziv);const r=(F.plan.rows||[]).find(x=>normN(x.naziv)===n);return r?r.plan:null}
-const normN=s=>String(s||"").toLowerCase().replace(/[^a-zčšž0-9]+/g," ").trim();
+const normN=s=>String(s||"").toLowerCase().replace(/[^a-zčšž0-9]+/g," ").replace(/\b(strošek|stroški|stroškov|celotni)\b/g," ").replace(/\s+/g," ").trim();
 const sum=(a,k)=>a.reduce((s,r)=>s+(r[k]||0),0);
 const isOpen=s=>s.status==="odprt"||s.status==="izvajanje"||!s.status;
 function sklepStats(){const t=today();const open=S.sklepi.filter(isOpen);
@@ -1011,8 +1011,10 @@ function vPoslovanje(){
     body+=`<section class="panel"><div class="panel-head"><h2>Letni plan ${y}</h2><button class="btn ghost" data-act="plan-vse">${ui.planVse?"Pokaži samo skupine":"Pokaži vse postavke"}</button></div>
       <div class="stats"><div class="stat"><span class="v">${EUR(t.p)}</span><span class="l">načrtovani prihodki</span></div><div class="stat"><span class="v">${EUR(t.o)}</span><span class="l">načrtovani odhodki</span></div>
         <div class="stat ${t.z<0?"bad":"good"}"><span class="v">${EUR(t.z)}</span><span class="l">načrtovani izid</span></div><div class="stat"><span class="v">${tl.p?PCT(t.p/tl.p*100):"–"}</span><span class="l">plan prihodkov / realizacija lani</span></div></div>
-      <div class="tablewrap"><table><thead><tr><th>Postavka</th><th class="r">Plan ${y}</th><th class="r">Plan ${y-1}</th><th class="r">Realizacija ${y-1}</th><th class="r">Plan / real. lani</th></tr></thead><tbody>
-      ${rows.map(r=>`<tr${r.tip!=="p"?` style="font-weight:600;background:var(--sunk)"`:""}><td>${esc(r.naziv)}</td><td class="r num">${EUR(r.plan)}</td><td class="r num">${EUR(r.planLani)}</td><td class="r num">${EUR(r.lani)}</td>${idxCell(r.plan,r.lani,r.sek==="o")}</tr>`).join("")}
+      ${F.plan.prejsnji?`<p class="small muted">Ta plan nadomešča prejšnjega (${esc(F.plan.prejsnji.vir||"")}). Stolpec »Prejšnji plan« pokaže razliko.</p>`:""}
+      <div class="tablewrap"><table><thead><tr><th>Postavka</th><th class="r">Plan ${y}</th>${F.plan.prejsnji?`<th class="r">Prejšnji plan</th><th class="r">Razlika</th>`:""}<th class="r">Plan ${y-1}</th><th class="r">Realizacija ${y-1}</th><th class="r">Plan / real. lani</th></tr></thead><tbody>
+      ${rows.map(r=>{const pm=F.plan.prejsnji?(F.plan.prejsnji.rows||[]).find(o=>normN(o.naziv)===normN(r.naziv)):null;const d=pm&&r.plan!=null&&pm.plan!=null?r.plan-pm.plan:null;
+        return `<tr${r.tip!=="p"?` style="font-weight:600;background:var(--sunk)"`:""}><td>${esc(r.naziv)}</td><td class="r num">${EUR(r.plan)}</td>${F.plan.prejsnji?`<td class="r num">${EUR(pm?pm.plan:null)}</td><td class="r num" style="${d?`color:var(--${(r.sek==="o")===(d>0)?"bad":"good"})`:""}">${d==null?"–":(d>0?"+":"")+EUR(d)}</td>`:""}<td class="r num">${EUR(r.planLani)}</td><td class="r num">${EUR(r.lani)}</td>${idxCell(r.plan,r.lani,r.sek==="o")}</tr>`}).join("")}
       </tbody></table></div></section>`;
   }
   return head+body;
@@ -1083,8 +1085,15 @@ async function readExcel(file){
   const wb=XLSX.read(await file.arrayBuffer(),{type:"array"});
   const sheets=wb.SheetNames.map(n=>parseSheet(n,XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:null}))).filter(sh=>(sh.cols.plan!=null||sh.cols.real!=null)&&sheetRows(sh).length>3);
   if(!sheets.length)throw new Error("V datoteki ni prepoznanih listov s plani ali analizami.");
-  // privzeto izberi samo liste za leto, ki je najnovejše, plus vse analize
-  ui.imp={vir:file.name,sheets,sejaId:"",cur:0};render();
+  // list z več stolpci plana (npr. PLAN 2026 in PLAN 2027) razdeli na en plan za vsako leto
+  const out=[];sheets.forEach(sh=>{
+    const py=sh.kind==="plan"?[...new Set(sh.hdr.map((h,i)=>i>0&&/plan/i.test(h)&&!/\//.test(h)?sh.ys[i]:null).filter(Boolean))].sort():[];
+    if(py.length>1)py.forEach(y=>{const c={...sh,name:sh.name.trim()+" · plan "+y,leto:y};c.cols=guessCols(c);out.push(c)});else out.push(sh)});
+  // če je za isto leto in obdobje več variant (npr. 7 %, 8,5 %, 10 %), naj uporabnica izbere sama
+  const key=s=>s.kind+"|"+s.leto+"|"+(s.kind==="plan"?"":s.do);const cnt={};out.forEach(s=>cnt[key(s)]=(cnt[key(s)]||0)+1);
+  out.forEach(s=>s.sel=cnt[key(s)]===1);
+  ui.imp={vir:file.name,sheets:out,sejaId:"",cur:Math.max(0,out.findIndex(s=>s.sel))};render();
+  if(Object.values(cnt).some(n=>n>1))toast("V datoteki je več različic za isto leto. Označite tiste, ki jih želite uvoziti.",7000);
 }
 const colLetter=i=>String.fromCharCode(65+i);
 function vImport(){
@@ -1107,7 +1116,10 @@ function doImport(){
   im.sheets.filter(s=>s.sel).forEach(sh=>{const rows=sh.rows||sheetRows(sh);const y=+sh.leto;if(!y)return;
     const key=String(y);const doc=by[key]||(by[key]=strip(S.finance[key]||{}));doc.leto=y;doc.druzbaId=S.druzbaId;
     const meta={rows,vir:im.vir+" · list "+sh.name,uvozeno:new Date().toISOString(),sejaId:im.sejaId||""};
-    if(sh.kind==="plan")doc.plan=meta;else{doc.obdobja=doc.obdobja||{};doc.obdobja[sh.do]={do:+sh.do,...meta}}n++});
+    if(sh.kind==="plan"){const old=doc.plan;
+      if(old&&old.rows){const om={};old.rows.forEach(r=>om[normN(r.naziv)]=r);meta.rows=rows.map(r=>{const o=om[normN(r.naziv)];return o?{...r,lani:r.lani!=null?r.lani:(o.lani??null),planLani:r.planLani!=null?r.planLani:(o.planLani??null)}:r});
+        if(old.vir!==meta.vir)meta.prejsnji={vir:old.vir,uvozeno:old.uvozeno,rows:old.rows}}
+      doc.plan=meta}else{doc.obdobja=doc.obdobja||{};doc.obdobja[sh.do]={do:+sh.do,...meta}}n++});
   Object.entries(by).forEach(([y,doc])=>write(fdPath("finance",y),doc));
   const ys=Object.keys(by).map(Number);if(ys.length)ui.leto=Math.max(...ys);ui.obd=null;ui.imp=null;render();toast(`Uvoženih ${n} listov.`);
 }
