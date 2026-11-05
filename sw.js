@@ -1,12 +1,12 @@
 // Service worker: aplikacija deluje tudi brez povezave.
-const VERSION = "nadzorni-svet-v2";
+const VERSION = "nadzorni-svet-v3";
 const SHELL = [
   "./", "./index.html", "./app.js", "./config.js", "./manifest.webmanifest",
-  "./vendor/msal-browser.min.js", "./vendor/jszip.min.js", "./vendor/mammoth.browser.min.js",
-  "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png", "./icons/favicon-32.png"
+  "./msal-browser.min.js", "./jszip.min.js", "./mammoth.browser.min.js", "./xlsx.full.min.js",
+  "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png", "./favicon-32.png"
 ];
 self.addEventListener("install", e => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)));
+  e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: "reload" })))).then(() => self.skipWaiting()));
 });
 self.addEventListener("activate", e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== VERSION).map(k => caches.delete(k)))).then(() => self.clients.claim()));
