@@ -59,7 +59,11 @@ V aplikaciji v Claudu: **Nastavitve → Izvozi vse podatke**. V novi aplikaciji:
 Pri vsaki točki dnevnega reda kliknite **+ Pripni gradivo** in izberite datoteke (PDF, Word, Excel …). Shranijo se v **OneDrive → Aplikacije → Nadzorni svet → Gradivo → družba → seja** in so dostopne na vseh napravah; ime datoteke odpre dokument v OneDrivu. Imena prilog se izpišejo tudi v vabilu.
 
 ### Vabilo po e-pošti
-V koraku 2 seje odprite **Pošlji vabilo po e-pošti**, izberite prejemnike in priloge (vabilo, paket gradiva, pripeto gradivo) in kliknite **Pripravi osnutek v Outlooku**. Osnutek se shrani v mapo **Osnutki** v Outlooku, kjer ga preverite in pošljete; aplikacija sama ne pošlje ničesar. Ob prvi uporabi Microsoft vpraša za dovoljenje za pošto. E-naslove članov in direktorja vpišete v **Nastavitvah** pri podatkih družbe (tam lahko dodate tudi novega člana).
+V koraku 2 seje odprite **Pošlji vabilo po e-pošti** in izberite prejemnike in priloge (vabilo, paket gradiva, pripeto gradivo). Nato:
+- **Odpri kot novo sporočilo v Outlooku** – prenese se datoteka .eml; ko jo odprete, jo Outlook na računalniku odpre kot novo sporočilo s prejemniki, besedilom in prilogami. Preglejte ga in kliknite Pošlji. Ne potrebuje nobenega dovoljenja.
+- **Shrani v mapo Osnutki** – osnutek se shrani neposredno v Outlook (mapa Osnutki). Potrebuje enkratno skrbniško soglasje v Microsoft Entra (dovoljenje Mail.ReadWrite).
+
+Aplikacija sama ne pošlje ničesar. E-naslove članov in direktorja vpišete v **Nastavitvah** pri podatkih družbe (tam lahko dodate tudi novega člana).
 
 ### Pregled vseh družb
 Če ste v nadzornem svetu več družb, je na vrhu strani **Pregled** preglednica vseh družb (naslednja seja, odprti in zapadli sklepi, izjave) ter skupni seznam sej v naslednjih 45 dneh in rokov v naslednjih 30 dneh.
@@ -73,7 +77,7 @@ V koraku 2 seje odprite **Pošlji vabilo po e-pošti**, izberite prejemnike in p
 Ko ste prijavljeni v OneDrive, se enkrat na teden shrani kopija vseh podatkov v **OneDrive → Aplikacije → Nadzorni svet → Varnostne kopije** (hrani se zadnjih 12). V **Nastavitve → Varnostna kopija** lahko kopijo prenesete ali iz nje obnovite izbrisane zapise; novejših sprememb obnova ne prepiše.
 
 ### Koledar Outlook
-**Nastavitve → Koledar Outlook → Poveži koledar Outlook**. Ob prvi povezavi Microsoft vpraša za dovoljenje za koledar. Prihodnje seje in roki odprtih sklepov vseh družb se vpisujejo v vaš koledar in posodabljajo. Povežite ga na eni napravi; dogodki se vidijo povsod, kjer uporabljate Outlook.
+**Nastavitve → Koledar Outlook → Poveži koledar Outlook**. Potrebuje enkratno skrbniško soglasje v Microsoft Entra (dovoljenje Calendars.ReadWrite); do takrat uporabljajte gumb **Koledar (.ics)** v zavihku Seje. Prihodnje seje in roki odprtih sklepov vseh družb se vpisujejo v vaš koledar in posodabljajo. Povežite ga na eni napravi; dogodki se vidijo povsod, kjer uporabljate Outlook.
 
 ### Iskanje
 Gumb **Išči** v glavi (na računalniku tudi Ctrl+K). Išče po sejah, prepisih, sklepih, preteklih zapisnikih, poročilih in letnih načrtih vseh družb; šumniki in končnice niso pomembni.

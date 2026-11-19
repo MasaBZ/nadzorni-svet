@@ -1309,7 +1309,7 @@ function vNastavitveSplosno(){
       <li><strong>Windows:</strong> v Edgeu ali Chromu kliknite ikono za namestitev v naslovni vrstici ali gumb »Namesti aplikacijo« zgoraj.</li>
       <li><strong>iPhone:</strong> v Safariju tapnite Deli → Dodaj na začetni zaslon. Odpirajte jo vedno z ikone na začetnem zaslonu.</li>
     </ul>
-    <p class="small muted">Različica 4 · ${isStandalone()?"nameščena aplikacija":"v brskalniku"}</p>
+    <p class="small muted">Različica 4.1 · ${isStandalone()?"nameščena aplikacija":"v brskalniku"}</p>
   </section>`;
 }
 
@@ -2049,6 +2049,50 @@ function mailBesedilo(s){
   return L.join("\n");
 }
 async function capture(fn){CAPTURE=[];try{await fn();return CAPTURE}finally{CAPTURE=null}}
+async function mailPriloge(m,s){
+  const att=[];
+  if(m.vabilo){const vab=s.vabilo||sestaviVabilo();att.push(...await capture(()=>saveDocx(fname(`Vabilo_${s.stevilka}_seja_NS_${s.datum}`)+".docx",textToW(vab))))}
+  if(m.paket)att.push(...await capture(()=>paketGradiva()));
+  if(m.priloge&&vseP(s).length){
+    if(!Sync.account)throw new Error("za pripeto gradivo iz OneDriva se prijavite v OneDrive ali odkljukajte »Pripeto gradivo«");
+    for(const p of vseP(s)){toast("Prenašam "+p.ime+" iz OneDriva …",4000);att.push({name:p.ime,blob:await Sync.download(p.id)})}
+  }
+  const total=att.reduce((a,x)=>a+x.blob.size,0);
+  if(total>24e6)throw new Error(`priloge skupaj merijo ${fmtSize(total)}, kar je preveč za e-pošto (največ okoli 24 MB). Večje gradivo delite prek OneDriva.`);
+  return att;
+}
+function mailZadeva(s,d){return `${s.vrsta==="korespondencna"?"Korespondenčna seja":"Vabilo na sejo"} NS – ${s.stevilka}. seja, ${d.naziv} (${fmtDate(s.datum)})`}
+/* Sporočilo kot datoteka .eml: Outlook na računalniku jo odpre kot novo, neposlano sporočilo (X-Unsent: 1).
+   Ne potrebuje nobenega dovoljenja Microsoft. */
+const b64utf=t=>{const u=new TextEncoder().encode(t);let b="";for(let i=0;i<u.length;i+=0x8000)b+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000));return btoa(b)};
+const encW=t=>/^[\x20-\x7e]*$/.test(t)?t:`=?UTF-8?B?${b64utf(t)}?=`;
+const wrap76=b=>b.replace(/.{1,76}/g,"$&\r\n");
+async function blobB64(blob){const u=new Uint8Array(await blob.arrayBuffer());let b="";for(let i=0;i<u.length;i+=0x8000)b+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000));return btoa(b)}
+const MIME_EXT={pdf:"application/pdf",docx:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",doc:"application/msword",xlsx:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",xls:"application/vnd.ms-excel",pptx:"application/vnd.openxmlformats-officedocument.presentationml.presentation",jpg:"image/jpeg",jpeg:"image/jpeg",png:"image/png",txt:"text/plain",zip:"application/zip"};
+async function pripraviEml(){
+  const s=ui.draft,d=druzba(),m=mailState();
+  const to=m.to.filter(isMail);if(!to.length){toast("Izberite vsaj enega prejemnika z e-naslovom.");return}
+  m.busyEml=true;render();
+  try{
+    const att=await mailPriloge(m,s);
+    const ime=e=>{const c=d.clani.find(x=>(x.mail||"").trim().toLowerCase()===e.toLowerCase());return c?c.ime:""};
+    const addr=e=>{const n=ime(e);return n?`"${encW(n)}" <${e}>`:`<${e}>`};
+    const B="----=_NS_"+uid();
+    const L=["X-Unsent: 1","MIME-Version: 1.0",`To: ${to.map(addr).join(", ")}`];
+    if(m.cc&&isMail(d.direktorMail))L.push(`Cc: ${d.direktor?`"${encW(d.direktor)}" `:""}<${d.direktorMail.trim()}>`);
+    L.push(`Subject: ${encW(mailZadeva(s,d))}`,`Content-Type: multipart/mixed; boundary="${B}"`,"","This is a multi-part message in MIME format.","",
+      `--${B}`,"Content-Type: text/html; charset=utf-8","Content-Transfer-Encoding: base64","",
+      wrap76(b64utf(`<html><body><div style="font-family:Calibri,Arial,sans-serif;font-size:11pt">${esc(mailBesedilo(s)).replace(/\n/g,"<br>")}</div></body></html>`)));
+    for(const a of att){
+      const ext=(a.name.split(".").pop()||"").toLowerCase();const n=encW(a.name);
+      L.push(`--${B}`,`Content-Type: ${MIME_EXT[ext]||"application/octet-stream"}; name="${n}"`,"Content-Transfer-Encoding: base64",`Content-Disposition: attachment; filename="${n}"`,"",wrap76(await blobB64(a.blob)));
+    }
+    L.push(`--${B}--`,"");
+    await saveFile(fname(`Vabilo_${s.stevilka}_seja_NS_${s.datum}`)+".eml",new Blob([L.join("\r\n")],{type:"message/rfc822"}));
+    toast("Sporočilo je pripravljeno. Odprite preneseno datoteko .eml – Outlook ga odpre kot novo sporočilo z vsemi prilogami.",9000);
+  }catch(e){toast("Sporočila ni bilo mogoče pripraviti: "+(e.message||e),8000)}
+  m.busyEml=false;render();
+}
 async function pripraviEposto(){
   const s=ui.draft,d=druzba(),m=mailState();
   if(!Sync.account){toast("Za pripravo e-pošte se prijavite v OneDrive (Nastavitve → OneDrive).",6000);return}
@@ -2056,16 +2100,10 @@ async function pripraviEposto(){
   let tok;try{tok=await gTok(MAIL_SCOPES)}catch(e){await gConsent(MAIL_SCOPES,"mail");return}
   m.busy=true;m.link=null;render();
   try{
-    // priloge
-    const att=[];
-    if(m.vabilo){const vab=s.vabilo||sestaviVabilo();att.push(...await capture(()=>saveDocx(fname(`Vabilo_${s.stevilka}_seja_NS_${s.datum}`)+".docx",textToW(vab))))}
-    if(m.paket)att.push(...await capture(()=>paketGradiva()));
-    if(m.priloge)for(const p of vseP(s)){att.push({name:p.ime,blob:await Sync.download(p.id)})}
-    const total=att.reduce((a,x)=>a+x.blob.size,0);
-    if(total>24e6)throw new Error(`priloge skupaj merijo ${fmtSize(total)}, kar je preveč za e-pošto (največ okoli 24 MB). Večje gradivo delite prek OneDriva.`);
+    const att=await mailPriloge(m,s);
     const api=(path,opts={})=>fetch("https://graph.microsoft.com/v1.0"+path,{...opts,headers:{Authorization:"Bearer "+tok,"Content-Type":"application/json",...(opts.headers||{})}});
     const ime=e=>{const c=d.clani.find(x=>(x.mail||"").trim().toLowerCase()===e.toLowerCase());return c?c.ime:""};
-    const msg={subject:`${s.vrsta==="korespondencna"?"Korespondenčna seja":"Vabilo na sejo"} NS – ${s.stevilka}. seja, ${d.naziv} (${fmtDate(s.datum)})`,
+    const msg={subject:mailZadeva(s,d),
       body:{contentType:"HTML",content:`<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt">${esc(mailBesedilo(s)).replace(/\n/g,"<br>")}</div>`},
       toRecipients:to.map(e=>({emailAddress:{address:e,name:ime(e)}})),
       ccRecipients:m.cc&&isMail(d.direktorMail)?[{emailAddress:{address:d.direktorMail.trim(),name:d.direktor||""}}]:[]};
@@ -2096,9 +2134,8 @@ async function pripraviEposto(){
 function vEposta(){
   const s=ui.draft,d=druzba(),m=mailState(),cl=d.clani.filter(c=>c.ime),pl=vseP(s);
   const brez=cl.filter(c=>!isMail(c.mail));
-  return `<details class="mailbox" ${m.link||m.busy?"open":""}><summary><strong>Pošlji vabilo po e-pošti</strong> <span class="small muted">– osnutek v Outlooku</span></summary>
+  return `<details class="mailbox" ${m.link||m.busy?"open":""}><summary><strong>Pošlji vabilo po e-pošti</strong> <span class="small muted">– pripravi sporočilo v Outlooku</span></summary>
     <div style="display:flex;flex-direction:column;gap:12px;margin-top:10px">
-    ${!Sync.account?`<p class="small muted">Najprej se prijavite v OneDrive (Nastavitve → OneDrive).</p>`:""}
     <div class="fld"><span>Prejemniki</span><div class="checks">${cl.map((c,i)=>isMail(c.mail)?`<label><input type="checkbox" data-mailto="${esc(c.mail.trim())}" ${m.to.includes(c.mail.trim())?"checked":""}>${esc(c.ime)} <span class="muted small">${esc(c.mail)}</span></label>`:"").join("")}
       ${isMail(d.direktorMail)?`<label><input type="checkbox" data-mailcc="1" ${m.cc?"checked":""}>V vednost: ${esc(d.direktor||"direktor")} <span class="muted small">${esc(d.direktorMail)}</span></label>`:""}</div>
       ${brez.length?`<span class="small muted">Brez e-naslova: ${brez.map(c=>esc(c.ime)).join(", ")}. E-naslove vpišete v <button class="btn ghost small" data-tab="nastavitve">Nastavitvah</button>.</span>`:""}</div>
@@ -2107,10 +2144,12 @@ function vEposta(){
       <label><input type="checkbox" data-mailopt="paket" ${m.paket?"checked":""}>Paket gradiva (Word: vabilo, zapisnik prejšnje seje, sklepi, poslovanje)</label>
       ${pl.length?`<label><input type="checkbox" data-mailopt="priloge" ${m.priloge?"checked":""}>Pripeto gradivo (${pl.length} ${pl.length===1?"datoteka":pl.length<5?"datoteke":"datotek"}, ${esc(fmtSize(pl.reduce((a,p)=>a+(p.velikost||0),0)))})</label>`:""}</div></div>
     <details class="small"><summary style="cursor:pointer">Besedilo e-pošte</summary><div class="pre" style="margin-top:6px">${esc(mailBesedilo(s))}</div><p class="small muted">Besedilo lahko pred pošiljanjem uredite v Outlooku.</p></details>
-    <div class="row"><button class="btn primary ${m.busy?"busy":""}" data-act="mail-pripravi" ${m.busy||!Sync.account?"disabled":""}>${m.busy?"Pripravljam osnutek ":"Pripravi osnutek v Outlooku"}</button>
+    <div class="row"><button class="btn primary ${m.busyEml?"busy":""}" data-act="mail-eml" ${m.busyEml?"disabled":""}>${m.busyEml?"Pripravljam sporočilo ":"Odpri kot novo sporočilo v Outlooku"}</button>
+      <button class="btn ghost ${m.busy?"busy":""}" data-act="mail-pripravi" ${m.busy||!Sync.account?"disabled":""}>${m.busy?"Shranjujem osnutek ":"Shrani v mapo Osnutki"}</button>
       ${m.link?`<a class="btn" href="${esc(m.link)}" target="_blank" rel="noopener">Odpri osnutek v Outlooku</a>`:""}</div>
     ${isDirty()?`<p class="small" style="color:var(--warn)">Seja ima neshranjene spremembe. E-pošta se pripravi iz trenutnega besedila na zaslonu.</p>`:""}
-    <p class="small muted">Aplikacija ne pošlje ničesar sama: osnutek se shrani v mapo Osnutki v vašem Outlooku, kjer ga preverite in pošljete. Ob prvi uporabi Microsoft vpraša za dovoljenje za dostop do pošte.</p>
+    <p class="small muted"><strong>Odpri kot novo sporočilo:</strong> prenese se datoteka .eml; ko jo odprete, jo Outlook na računalniku odpre kot novo sporočilo s prejemniki, besedilom in prilogami. Preglejte ga in kliknite Pošlji. Ne potrebuje nobenega dovoljenja.${isIOS?" Na iPhonu ta način ne deluje dobro – uporabite ga na računalniku.":""}<br>
+      <strong>Shrani v mapo Osnutki:</strong> osnutek se shrani neposredno v Outlook. Potrebuje enkratno odobritev skrbnika vašega Microsoft 365.<br>Aplikacija sama ne pošlje ničesar.</p>
     </div></details>`;
 }
 
@@ -2146,6 +2185,7 @@ async function v4Act(a,id,b){
   switch(a){
     case "pril-brisi":{const [i,j]=String(id).split(":").map(Number);if(arm("pr-"+i+"-"+j))await odstraniGradivo(i,j);return true}
     case "mail-pripravi":await pripraviEposto();return true;
+    case "mail-eml":await pripraviEml();return true;
     case "vse-odpri":setDruzba(id);go("pregled");return true;
     case "vse-seja":{const s=(D.col.seje||{})[id];if(!s)return true;if(s.druzbaId!==S.druzbaId){LS.set("druzba",s.druzbaId);derive()}openSeja(id);return true}
     case "vse-sklep":{const k=(D.col.sklepi||{})[id];if(!k)return true;if(k.druzbaId!==S.druzbaId){LS.set("druzba",k.druzbaId);derive()}ui.filter="vsi";go("sklepi");ui.sklepEdit=clone(S.sklepi.find(x=>x.id===id));render();window.scrollTo({top:0});return true}
