@@ -174,6 +174,33 @@ audio{width:100%;max-width:420px;height:40px}
 input[type=password]{font:inherit;font-size:14px;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:7px 9px;width:100%;min-width:0}
 @media (max-width:560px){ header.top .wrap{padding-block:8px 0;gap:6px} .stats{grid-template-columns:repeat(auto-fit,minmax(96px,1fr))} header.top .eyebrow{display:none} header.top h1{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:calc(100vw - 32px)} .brand{flex-direction:column;gap:2px} .conn{font-size:12px} .btn{padding:9px 13px} nav.tabs button{padding:9px 11px 11px} }
 
+/* Različica 3: zaklep, iskanje */
+#lockScreen{position:fixed;inset:0;z-index:1000;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:20px;padding-top:max(20px,env(safe-area-inset-top))}
+.lockbox{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:28px 24px;max-width:360px;width:100%;display:flex;flex-direction:column;gap:14px;text-align:center}
+.lockbox h2{margin:0}
+.lockbox form{display:flex;gap:8px}
+.lockbox input{text-align:center;font-size:20px;letter-spacing:.25em;flex:1;min-width:0}
+.lockbox details{text-align:left}
+#lockMsg{color:var(--bad);min-height:1.2em;margin:0}
+.searchbtn{display:inline-flex;align-items:center;gap:5px}
+#isk{font-size:17px;padding:10px 12px}
+.sresult{display:flex;flex-direction:column;gap:6px;text-align:left;width:100%;padding:12px 6px;border:0;border-bottom:1px solid var(--line);background:none;cursor:pointer;font:inherit;color:inherit}
+.sresult:hover{background:var(--sunk)}
+.sresult .snip{color:var(--muted);line-height:1.5}
+mark{background:#fbe7a1;color:inherit;border-radius:2px;padding:0 1px}
+/* Različica 4: gradivo, e-pošta, vse družbe */
+.priloge{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.prl{display:inline-flex;align-items:center;gap:6px;background:var(--sunk);border-radius:999px;padding:2px 4px 2px 10px;font-size:13px;max-width:100%}
+.prl a{color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px}
+.prl .btn.small{padding:2px 8px}
+.mailbox{border-top:1px solid var(--line);padding-top:12px}
+.mailbox>summary{cursor:pointer}
+.linkbtn{background:none;border:0;padding:0;font:inherit;font-weight:600;color:var(--accent);cursor:pointer;text-align:left}
+.linkitem{width:100%;background:none;border:0;border-bottom:1px solid var(--line);font:inherit;color:inherit;text-align:left;cursor:pointer;padding:10px 4px}
+.linkitem:hover{background:var(--sunk)}
+table.vse tr.cur td{background:var(--accent-soft)}
+@media (max-width:640px){ .izjtbl thead{display:none} .izjtbl tr{display:block;padding:10px 0;border-bottom:1px solid var(--line)} .izjtbl td{display:block;border:0;padding:4px 0} .izjtbl td[data-l]::before{content:attr(data-l);display:block;font-size:12px;color:var(--muted);margin-bottom:3px} .izjtbl input[type=date]{max-width:none!important} }
+
 </style>
 </head>
 <body>
@@ -185,6 +212,7 @@ input[type=password]{font:inherit;font-size:14px;color:var(--ink);background:var
         <h1 id="firma">Nadzorni svet</h1>
       </div>
       <div class="conn"><span id="druzbaSwitch" hidden><select id="druzbaSel" aria-label="Izberi družbo" style="width:auto;max-width:240px;font-size:13px;padding:4px 8px"></select></span><span class="dot" id="syncDot"></span><span id="conn">Nalagam …</span>
+        <button class="btn ghost small searchbtn" data-tab="iskanje" title="Iskanje (Ctrl+K)" aria-label="Iskanje"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Išči</button>
         <button class="btn ghost small" id="installBtn" hidden>Namesti aplikacijo</button></div>
     </div>
     <nav class="tabs" id="tabs" aria-label="Razdelki">
@@ -195,6 +223,7 @@ input[type=password]{font:inherit;font-size:14px;color:var(--ink);background:var
       <button data-tab="direktor">Uspešnost direktorja</button>
       <button data-tab="predloge">Pretekli zapisniki</button>
       <button data-tab="porocilo">Poročilo skupščini</button>
+      <button data-tab="clani">Člani in načrt</button>
       <button data-tab="nastavitve">Nastavitve</button>
     </nav>
   </div>

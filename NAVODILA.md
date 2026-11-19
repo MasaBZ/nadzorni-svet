@@ -53,6 +53,37 @@ Med snemanjem mora biti naprava povezana v internet. Če se povezava prekine, ap
 ### 6. Prenos podatkov iz različice v Claudu
 V aplikaciji v Claudu: **Nastavitve → Izvozi vse podatke**. V novi aplikaciji: **Nastavitve → Varnostna kopija → Uvozi podatke**. Uvoz samodejno ustvari družbo z nazivom iz izvoza.
 
+## Novo v različici 4
+
+### Gradivo za seje
+Pri vsaki točki dnevnega reda kliknite **+ Pripni gradivo** in izberite datoteke (PDF, Word, Excel …). Shranijo se v **OneDrive → Aplikacije → Nadzorni svet → Gradivo → družba → seja** in so dostopne na vseh napravah; ime datoteke odpre dokument v OneDrivu. Imena prilog se izpišejo tudi v vabilu.
+
+### Vabilo po e-pošti
+V koraku 2 seje odprite **Pošlji vabilo po e-pošti**, izberite prejemnike in priloge (vabilo, paket gradiva, pripeto gradivo) in kliknite **Pripravi osnutek v Outlooku**. Osnutek se shrani v mapo **Osnutki** v Outlooku, kjer ga preverite in pošljete; aplikacija sama ne pošlje ničesar. Ob prvi uporabi Microsoft vpraša za dovoljenje za pošto. E-naslove članov in direktorja vpišete v **Nastavitvah** pri podatkih družbe (tam lahko dodate tudi novega člana).
+
+### Pregled vseh družb
+Če ste v nadzornem svetu več družb, je na vrhu strani **Pregled** preglednica vseh družb (naslednja seja, odprti in zapadli sklepi, izjave) ter skupni seznam sej v naslednjih 45 dneh in rokov v naslednjih 30 dneh.
+
+## Novo v različici 3
+
+### Zaklep aplikacije
+**Nastavitve → Zaklep aplikacije**: vpišite kodo (4–12 številk) in izberite, kdaj naj se aplikacija zaklene. Na iPhonu lahko nato vklopite še odklepanje s Face ID / Touch ID, na računalniku z Windows Hello. Zaklep velja za posamezno napravo, zato ga vklopite na vsaki napravi. Če kodo pozabite, na zaklenjenem zaslonu izberite **Pozabljena koda**: podatki se izbrišejo s te naprave in se po prijavi v OneDrive znova prenesejo.
+
+### Samodejne varnostne kopije
+Ko ste prijavljeni v OneDrive, se enkrat na teden shrani kopija vseh podatkov v **OneDrive → Aplikacije → Nadzorni svet → Varnostne kopije** (hrani se zadnjih 12). V **Nastavitve → Varnostna kopija** lahko kopijo prenesete ali iz nje obnovite izbrisane zapise; novejših sprememb obnova ne prepiše.
+
+### Koledar Outlook
+**Nastavitve → Koledar Outlook → Poveži koledar Outlook**. Ob prvi povezavi Microsoft vpraša za dovoljenje za koledar. Prihodnje seje in roki odprtih sklepov vseh družb se vpisujejo v vaš koledar in posodabljajo. Povežite ga na eni napravi; dogodki se vidijo povsod, kjer uporabljate Outlook.
+
+### Iskanje
+Gumb **Išči** v glavi (na računalniku tudi Ctrl+K). Išče po sejah, prepisih, sklepih, preteklih zapisnikih, poročilih in letnih načrtih vseh družb; šumniki in končnice niso pomembni.
+
+### Člani in načrt
+Nov zavihek z evidenco izjav članov NS (o neodvisnosti in o nasprotju interesov, veljavnost 12 mesecev) in letnim načrtom dela NS. Iz vrstice načrta ustvarite sejo z dnevnim redom; načrt prenesete v Word.
+
+### Soniox v EU
+**Nastavitve → Soniox → Obdelava zvoka: EU**. Potreben je ključ iz Soniox projekta v regiji EU.
+
 ## Potek seje
 1. **Seje → Nova seja**: dnevni red, vabilo (Word).
 2. Na seji: **Začni snemanje** (telefon ali računalnik na mizi, zaslon odklenjen, aplikacija v ospredju). Če je vpisan ključ Soniox, se prepis sproti izpisuje pod časovnikom. Po koncu **Ustavi in shrani**: prepis je že v koraku 4, posnetek pa se naloži v OneDrive (Aplikacije → Nadzorni svet → Posnetki).

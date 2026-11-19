@@ -51,10 +51,10 @@ const IDB={db:null,
 /* ---------- podatkovni model ----------
    D.col[zbirka][id] = {...polja, _u: čas spremembe, _d: 1 če izbrisano}
 */
-const COLS=["druzbe","seje","sklepi","predloge","finance","direktor","prepisi","nastavitve","posnetki","porocila"];
+const COLS=["druzbe","seje","sklepi","predloge","finance","direktor","prepisi","nastavitve","posnetki","porocila","izjave","nacrti","koledar"];
 const PER_DRUZBA=["seje","sklepi","predloge","posnetki"];
 let D={v:1,col:{}}; COLS.forEach(c=>D.col[c]={});
-const S={druzbe:[],druzbaId:null,seje:[],sklepi:[],predloge:[],finance:{},direktor:{},druzba:null,prepisi:{},posnetki:[]};
+const S={druzbe:[],druzbaId:null,seje:[],sklepi:[],predloge:[],finance:{},direktor:{},druzba:null,prepisi:{},posnetki:[],izjave:{},nacrti:{}};
 function derive(){
   const live=c=>Object.entries(D.col[c]||{}).filter(([,r])=>r&&!r._d);
   S.druzbe=live("druzbe").map(([id,r])=>({id,...r})).sort((a,b)=>(a.naziv||"").localeCompare(b.naziv||"","sl"));
@@ -68,6 +68,8 @@ function derive(){
   S.finance=Object.fromEntries(live("finance").filter(mine).map(([,r])=>[String(r.leto),r]));
   S.direktor=Object.fromEntries(live("direktor").filter(mine).map(([,r])=>[String(r.leto),r]));
   S.prepisi=Object.fromEntries(live("prepisi"));
+  S.izjave=Object.fromEntries(live("izjave").filter(mine).map(([k,r])=>[r.kljuc,{id:k,...r}]));
+  S.nacrti=Object.fromEntries(live("nacrti").filter(mine).map(([,r])=>[String(r.leto),r]));
 }
 function setDruzba(id){LS.set("druzba",id);ui.sejaId=null;ui.draft=null;ui.sklepEdit=null;ui.manual=null;ui.izlusceni=null;ui.dirPorocilo="";derive();render()}
 function migrateV1(){ // stari podatki brez družbe
@@ -81,9 +83,9 @@ function migrateV1(){ // stari podatki brez družbe
   LS.set("druzba",id);
 }
 const strip=o=>{const c=clone(o)||{};delete c.id;delete c._u;delete c._d;return c};
-let persistT=null;
+let persistT=null,WIPING=false;
 function persistSoon(){clearTimeout(persistT);persistT=setTimeout(persistNow,250)}
-function persistNow(){clearTimeout(persistT);return IDB.set("kv","data",D).catch(e=>toast("Shranjevanje na napravo ni uspelo: "+e))}
+function persistNow(){clearTimeout(persistT);if(WIPING)return Promise.resolve();return IDB.set("kv","data",D).catch(e=>toast("Shranjevanje na napravo ni uspelo: "+e))}
 function write(path,data){
   const [col,id]=path.split("/");
   D.col[col]=D.col[col]||{};
@@ -126,7 +128,7 @@ const Sync={msal:null,account:null,state:"off",msg:"",last:LS.get("lastSync",nul
   async login(){
     if(!this.clientId()){toast("Najprej vpišite Client ID v Nastavitvah.");return}
     if(!this.msal){await this.init();if(!this.msal)return}
-    await persistNow();
+    await persistNow();skipLockOnce();
     this.msal.loginRedirect({scopes:SCOPES,prompt:"select_account"});
   },
   async logout(){if(!this.msal||!this.account)return;await persistNow();this.msal.logoutRedirect({account:this.account})},
@@ -168,6 +170,7 @@ const Sync={msal:null,account:null,state:"off",msg:"",last:LS.get("lastSync",nul
       if(e&&e.code==="expired"){}else if(!navigator.onLine)this.set("offline");else this.set("err",String(e&&e.message||e));
     }
     this.running=false;
+    if(this.state==="ok"){Backup.maybe();Cal.soon()}
     if(this.again){this.again=false;this.soon()}
   },
   async uploadLarge(path,blob,onProgress){ // path pod approot, npr. "Posnetki/x.m4a"
@@ -235,6 +238,7 @@ function errMsg(e){
 
 /* ---------- prenos datotek ---------- */
 async function saveFile(name,blob){
+  if(CAPTURE){CAPTURE.push({name,blob});return}
   const file=new File([blob],name,{type:blob.type||"application/octet-stream"});
   if(isIOS&&navigator.canShare&&navigator.canShare({files:[file]})){
     try{await navigator.share({files:[file]});return}catch(e){if(e&&e.name==="AbortError")return}
@@ -252,7 +256,7 @@ const DEF_TOCKE=["Ugotovitev sklepčnosti in potrditev dnevnega reda","Potrditev
 
 function druzba(){
   const d=S.druzba||{};
-  return {pravila:d.pravila||"",naziv:d.naziv||"",naslov:d.naslov||"",direktor:d.direktor||"",kraj:d.kraj||"",
+  return {pravila:d.pravila||"",naziv:d.naziv||"",naslov:d.naslov||"",direktor:d.direktor||"",direktorMail:d.direktorMail||"",kraj:d.kraj||"",
     clani:Array.isArray(d.clani)&&d.clani.length?d.clani:[{ime:"",funkcija:"predsednica"},{ime:"",funkcija:"namestnik predsednice"},{ime:"",funkcija:"član"}]};
 }
 const predsednica=()=>{const c=druzba().clani.find(c=>/predsedni/i.test(c.funkcija)&&!/namest/i.test(c.funkcija));return c&&c.ime?c.ime:"[ime predsednice]"};
@@ -271,9 +275,10 @@ function render(){
     const sv=savedSeja();if(!sv){ui.sejaId=null;ui.draft=null}else if(!isDirty()&&ui._draftU!==sv._u){ui.draft=clone(sv);ui._draftU=sv._u}
   }
   if(!S.druzbe.length&&ui.tab!=="nastavitve"){main.innerHTML=vOnboarding();return}
-  const v={pregled:vPregled,seje:ui.sejaId?vSeja:vSeje,sklepi:vSklepi,poslovanje:vPoslovanje,direktor:vDirektor,predloge:vPredloge,porocilo:vPorocilo,nastavitve:vNastavitve}[ui.tab]||vPregled;
+  const v={pregled:vPregled,seje:ui.sejaId?vSeja:vSeje,sklepi:vSklepi,poslovanje:vPoslovanje,direktor:vDirektor,predloge:vPredloge,porocilo:vPorocilo,nastavitve:vNastavitve,iskanje:vIskanje,clani:vClani}[ui.tab]||vPregled;
   main.innerHTML=installNote()+v();
   if(ui.tab==="seje"&&ui.sejaId)updateDirty();
+  if(ui.tab==="iskanje"&&!Lock.locked)setTimeout(()=>{const i=$("#isk");if(i&&document.activeElement!==i&&!isIOS){i.focus();i.setSelectionRange(i.value.length,i.value.length)}},0);
 }
 function go(tab){ if(Rec.active&&tab!=="seje"){toast("Med snemanjem ostanite na strani seje.");return} ui.tab=tab;ui.manual=null; if(tab!=="seje"){ui.sejaId=null;ui.draft=null} try{history.replaceState(null,"","#"+tab)}catch(e){} render(); window.scrollTo(0,0); }
 
@@ -367,7 +372,9 @@ function vPregled(){
     :emptyBox("Ni sklicane seje",zadnja?`Zadnja seja je bila ${esc(fmtDate(zadnja.datum))}.`:"Ustvarite prvo sejo in pripravite vabilo z dnevnim redom.",`<button class="btn primary" data-act="nova-seja">Nova seja</button>`);
   const cak=S.seje.filter(x=>x.status==="potrjena"&&(S.posnetki.some(p=>p.sejaId===x.id)||S.prepisi[x.id]));
   const banner=cak.length?`<div class="banner warn"><span>${cak.length===1?"Za potrjeno "+esc(cak[0].stevilka)+". sejo še obstaja":"Za "+cak.length+" potrjene seje še obstajata"} posnetek ali prepis, ki bi ga bilo treba po potrditvi zapisnika izbrisati.</span><button class="btn" data-act="odpri-sejo" data-id="${cak[0].id}">Odpri ${esc(cak[0].stevilka)}. sejo</button></div>`:"";
-  return banner+`
+  const izjN=izjOpozorila();
+  const izjBanner=izjN?`<div class="banner warn"><span>Izjave članov NS: pri ${izjN===1?"enem članu":izjN+" članih"} je izjava potekla, kmalu poteče ali manjka.</span><button class="btn" data-tab="clani">Odpri evidenco</button></div>`:"";
+  return vVseDruzbe()+banner+izjBanner+`
   <div class="grid2">
     <section class="panel"><div class="panel-head"><h2>Naslednja seja</h2></div>${sejaCard}
       ${zadnja&&zadnja.status!=="potrjena"?`<p class="small muted">Zapisnik ${esc(zadnja.stevilka)}. seje (${esc(fmtDate(zadnja.datum))}) še ni potrjen. <button class="btn ghost small" data-act="odpri-sejo" data-id="${zadnja.id}">Odpri</button></p>`:""}
@@ -466,6 +473,7 @@ function vSeja(){
       ${(s.tocke||[]).map((t,i)=>`<div class="tocka"><span class="n">${i+1}.</span><div class="body">
         <input type="text" id="t-naslov-${i}" data-t="naslov" data-i="${i}" value="${esc(t.naslov)}" placeholder="Naslov točke" aria-label="Naslov ${i+1}. točke">
         <input type="text" id="t-gradivo-${i}" data-t="gradivo" data-i="${i}" value="${esc(t.gradivo)}" placeholder="Gradivo (npr. Poročilo o poslovanju jan–sep 2026)" aria-label="Gradivo ${i+1}. točke">
+        ${vPriloge(t,i)}
         <textarea id="t-predlog-${i}" data-t="predlog" data-i="${i}" rows="2" placeholder="Predlog sklepa" aria-label="Predlog sklepa ${i+1}. točke">${esc(t.predlog)}</textarea></div>
         <div class="tools"><button class="btn ghost" data-act="tocka-gor" data-id="${i}" ${i===0?"disabled":""} aria-label="Premakni gor">↑</button><button class="btn ghost" data-act="tocka-dol" data-id="${i}" ${i===s.tocke.length-1?"disabled":""} aria-label="Premakni dol">↓</button><button class="btn ghost" data-act="tocka-brisi" data-id="${i}" aria-label="Odstrani točko">✕</button></div></div>`).join("")}
       <button class="btn" data-act="tocka-dodaj" style="margin-top:10px">Dodaj točko</button></div>
@@ -476,7 +484,8 @@ function vSeja(){
     <div class="row"><button class="btn" data-act="vabilo-sestavi">${s.vabilo?"Sestavi znova iz dnevnega reda":"Sestavi vabilo"}</button><button class="btn primary" data-act="paket">Paket gradiva (Word)</button>
       ${s.vabilo?`<button class="btn" data-act="vabilo-word">Prenesi Word</button><button class="btn ghost" data-act="kopiraj" data-id="f-vabilo">Kopiraj besedilo</button>`:""}</div>
     ${s.vabilo?`<textarea class="doc" id="f-vabilo" data-f="vabilo" style="min-height:360px">${esc(s.vabilo)}</textarea>`:""}
-    <p class="small muted">Paket gradiva združi v en Wordov dokument vabilo, osnutek zapisnika prejšnje seje, pregled realizacije sklepov, povzetek zadnje analize poslovanja in vprašanja za direktorja. Drugo gradivo (poročila, izkazi) priložite e-pošti kot doslej.</p>
+    <p class="small muted">Paket gradiva združi v en Wordov dokument vabilo, osnutek zapisnika prejšnje seje, pregled realizacije sklepov, povzetek zadnje analize poslovanja in vprašanja za direktorja. Gradivo (poročila, izkazi) pripnete pri posamezni točki dnevnega reda; shrani se v OneDrive in ga lahko priložite e-pošti.</p>
+    ${vEposta()}
   </section>
 
   <section class="panel">
@@ -539,7 +548,7 @@ function sestaviVabilo(){
   if(s.vrsta==="korespondencna")L.push(`Sklicujem ${s.stevilka}. korespondenčno sejo nadzornega sveta družbe ${d.naziv}. Glasovanje poteka do ${fmtDateLong(s.datum)}${s.ura?", do "+s.ura+" ure":""}.`);
   else L.push(`Sklicujem ${s.stevilka}. sejo nadzornega sveta družbe ${d.naziv}, ki bo v ${fmtDateLong(s.datum)}${s.ura?", ob "+s.ura+" uri":""}${s.kraj?", "+s.kraj:""}.`);
   L.push("","Predlagam naslednji","","DNEVNI RED:","");
-  (s.tocke||[]).forEach((t,i)=>{L.push(`${i+1}. ${t.naslov}`);if(t.gradivo)L.push(`   Gradivo: ${t.gradivo}`);if(t.predlog)L.push(`   Predlog sklepa: ${t.predlog}`);L.push("")});
+  (s.tocke||[]).forEach((t,i)=>{L.push(`${i+1}. ${t.naslov}`);if(t.gradivo)L.push(`   Gradivo: ${t.gradivo}`);if((t.priloge||[]).length)L.push(`   Priloge: ${t.priloge.map(p=>p.ime).join(", ")}`);if(t.predlog)L.push(`   Predlog sklepa: ${t.predlog}`);L.push("")});
   L.push("Gradivo k posameznim točkam dnevnega reda je priloženo temu vabilu.");
   if(s.vrsta!=="korespondencna")L.push("Seja se bo zvočno snemala za potrebe priprave zapisnika. Prosim, da morebitno odsotnost pravočasno sporočite.");
   L.push("","Lep pozdrav,","",predsednica(),"predsednica nadzornega sveta","","Priloge: gradivo po točkah dnevnega reda");
@@ -549,7 +558,7 @@ function sestaviVabilo(){
 /* ---------- SPROTNI PREPIS (Soniox) ----------
    Med snemanjem se zvok sproti pošilja v Soniox (16 kHz PCM), prepis z oznakami govorcev se izpisuje v korak 4.
    Ključ je shranjen samo na tej napravi (Nastavitve → Soniox). */
-const SONIOX_URL="wss://stt-rt.soniox.com/transcribe-websocket";
+const sxUrl=()=>LS.get("sonioxRegion","us")==="eu"?"wss://stt-rt.eu.soniox.com/transcribe-websocket":"wss://stt-rt.soniox.com/transcribe-websocket";
 const Live={on:false,ws:null,ac:null,src:null,proc:null,sejaId:null,base:"",fin:"",nonfin:"",lastSpk:null,legacy:false,opened:false,stopping:false,
   fatal:false,dead:false,err:"",retries:0,kaT:0,saveT:0,reT:0,done:null,
   key(){return LS.get("sonioxKey","")},
@@ -557,7 +566,7 @@ const Live={on:false,ws:null,ac:null,src:null,proc:null,sejaId:null,base:"",fin:
   text(){const f=this.fin.trim();return (this.base&&f?this.base+"\n\n":this.base)+f},
   config(){const c={model:LS.get("sonioxModel","stt-rt-v6"),audio_format:"pcm_s16le",sample_rate:16000,num_channels:1,language_hints:["sl"],enable_speaker_diarization:true};
     if(this.legacy)c.api_key=this.key();return c},
-  open(){return this.legacy?new WebSocket(SONIOX_URL):new WebSocket(SONIOX_URL,["soniox-api-key",this.key()])},
+  open(){return this.legacy?new WebSocket(sxUrl()):new WebSocket(sxUrl(),["soniox-api-key",this.key()])},
   start(stream,sejaId){
     Object.assign(this,{on:true,sejaId,fin:"",nonfin:"",lastSpk:null,err:"",retries:0,stopping:false,fatal:false,dead:false,legacy:LS.get("sonioxLegacy",false)});
     const prev=(ui.sejaId===sejaId?(ui.prepis||""):((S.prepisi[sejaId]||{}).besedilo||"")).trim();
@@ -642,7 +651,7 @@ const Live={on:false,ws:null,ac:null,src:null,proc:null,sejaId:null,base:"",fin:
     return new Promise((res,rej)=>{
       const key=this.key();if(!key)return rej(new Error("Vpišite ključ."));
       let settled=false,legacy=LS.get("sonioxLegacy",false);
-      const go=()=>{let opened=false,err="";const ws=legacy?new WebSocket(SONIOX_URL):new WebSocket(SONIOX_URL,["soniox-api-key",key]);
+      const go=()=>{let opened=false,err="";const ws=legacy?new WebSocket(sxUrl()):new WebSocket(sxUrl(),["soniox-api-key",key]);
         const fin=(ok,m)=>{if(settled)return;settled=true;try{ws.close()}catch(e){}ok?res():rej(new Error(m))};
         ws.onopen=()=>{opened=true;const c={model:LS.get("sonioxModel","stt-rt-v6"),audio_format:"pcm_s16le",sample_rate:16000,num_channels:1,language_hints:["sl"]};if(legacy)c.api_key=key;
           ws.send(JSON.stringify(c));ws.send(new Int16Array(8000).buffer);ws.send("")};
@@ -1245,9 +1254,10 @@ function vNastavitve(){
   if(!S.druzba)return druzbeHtml+vNastavitveSplosno();
   return druzbeHtml+`<section class="panel"><h2>${esc(d.naziv||"Družba")}: podatki in nadzorni svet</h2><p class="lede">Ti podatki se uporabijo v vabilih, zapisnikih in poročilih te družbe.</p>
     <div class="fields"><label class="fld">Naziv družbe<input type="text" id="n-naziv" value="${esc(d.naziv)}"></label><label class="fld">Naslov sedeža<input type="text" id="n-naslov" value="${esc(d.naslov)}"></label></div>
-    <div class="fields"><label class="fld">Direktor<input type="text" id="n-direktor" value="${esc(d.direktor)}"></label><label class="fld">Običajni kraj sej<input type="text" id="n-kraj" value="${esc(d.kraj)}" placeholder="npr. sejna soba na sedežu družbe"></label></div>
+    <div class="fields"><label class="fld">Direktor<input type="text" id="n-direktor" value="${esc(d.direktor)}"></label><label class="fld">E-pošta direktorja<input type="email" id="n-dirmail" value="${esc(d.direktorMail)}" placeholder="za vabila v vednost"></label><label class="fld">Običajni kraj sej<input type="text" id="n-kraj" value="${esc(d.kraj)}" placeholder="npr. sejna soba na sedežu družbe"></label></div>
     <h3>Člani nadzornega sveta</h3>
-    ${d.clani.map((c,i)=>`<div class="fields"><label class="fld">Ime in priimek<input type="text" id="n-cl-ime-${i}" value="${esc(c.ime)}"></label><label class="fld">Funkcija<input type="text" id="n-cl-fun-${i}" value="${esc(c.funkcija)}"></label></div>`).join("")}
+    ${d.clani.map((c,i)=>`<div class="fields"><label class="fld">Ime in priimek<input type="text" id="n-cl-ime-${i}" value="${esc(c.ime)}"></label><label class="fld">Funkcija<input type="text" id="n-cl-fun-${i}" value="${esc(c.funkcija)}"></label><label class="fld">E-pošta<input type="email" id="n-cl-mail-${i}" value="${esc(c.mail||"")}" placeholder="za vabila"></label></div>`).join("")}
+    <div class="row"><button class="btn ghost" data-act="clan-dodaj">+ Dodaj člana</button></div>
     <div class="fld"><span>Wordova predloga za zapisnik</span><div class="row">${(S.druzba||{}).wordPredloga?`<span class="chip good">${esc(S.druzba.wordPredlogaIme||"naložena")}</span><button class="btn ghost small ${ui.confirm==="pw"?"danger armed":""}" data-act="predloga-word-brisi">${ui.confirm==="pw"?"Potrdite":"Odstrani"}</button>`:`<span class="small muted">ni naložena</span>`}
       <label class="btn" for="wordTplFile">${(S.druzba||{}).wordPredloga?"Zamenjaj":"Naloži"} (.docx)</label><input type="file" id="wordTplFile" accept=".docx" hidden></div>
       <span class="small muted">Naložite enega od svojih dosedanjih zapisnikov. Aplikacija iz njega prevzame glavo z logotipom, pisavo, naslove točk, oštevilčenje, nogo in robove; vsebina se ne uporabi.</span></div>
@@ -1268,6 +1278,8 @@ function vNastavitveSplosno(){
       <div class="row" style="margin-top:8px"><input type="text" id="n-client" value="${esc(LS.get("clientId","")||"")}" placeholder="${esc((window.NS_CONFIG||{}).CLIENT_ID||"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")}" style="max-width:380px"><button class="btn" data-act="client-shrani">Shrani</button></div>
       <label class="fld" style="margin-top:8px;max-width:380px">Imenik (domena službenega Microsoft 365, npr. podjetje.si)<input type="text" id="n-tenant" value="${esc(LS.get("tenant","")||"")}" placeholder="pusti prazno za osebni račun"></label></details>
   </section>
+  ${vZaklep()}
+  ${vKoledar()}
 
   <section class="panel"><h2>Claude</h2>
     <p class="lede">Brez ključa aplikacija pripravi navodilo, ki ga prilepite v svojo aplikacijo Claude, odgovor pa prilepite nazaj. Z API ključem Claude piše neposredno v aplikaciji (plačilo po porabi). Ključ ustvarite na console.anthropic.com (API keys). Shrani se samo na tej napravi, zato ga vpišite na računalniku in na telefonu.</p>
@@ -1279,7 +1291,9 @@ function vNastavitveSplosno(){
   <section class="panel"><div class="panel-head"><h2>Soniox – sprotni prepis seje</h2>${LS.get("sonioxKey","")?(LS.get("sonioxOn",true)!==false?`<span class="chip good">Vklopljeno</span>`:`<span class="chip">Izklopljeno</span>`):`<span class="chip">Ni ključa</span>`}</div>
     <p class="lede">Z ključem Soniox se med snemanjem seje prepis piše sam, z ločenimi govorci, in se shrani v korak 4. Prepisa posnetka v Wordu ni več treba delati. Ključ ustvarite na console.soniox.com (API keys); shrani se samo na tej napravi, zato ga vpišite na računalniku in na telefonu. Zvok seje se med snemanjem pošilja Sonioxu v prepis.</p>
     <div class="fields"><label class="fld">Soniox API ključ<input type="password" id="n-sxkey" value="${esc(LS.get("sonioxKey",""))}" autocomplete="off" placeholder="prilepite ključ"></label>
-      <label class="fld">Model<input type="text" id="n-sxmodel" value="${esc(LS.get("sonioxModel","stt-rt-v6"))}"></label></div>
+      <label class="fld">Model<input type="text" id="n-sxmodel" value="${esc(LS.get("sonioxModel","stt-rt-v6"))}"></label>
+      <label class="fld">Obdelava zvoka<select id="n-sxreg"><option value="us" ${LS.get("sonioxRegion","us")!=="eu"?"selected":""}>ZDA (privzeto)</option><option value="eu" ${LS.get("sonioxRegion","us")==="eu"?"selected":""}>EU – potreben ključ iz projekta v EU</option></select></label></div>
+    <p class="small muted">Za obdelavo v EU morate pri Sonioxu imeti projekt v regiji EU (zahtevate ga pri sales@soniox.com) in vpisati ključ iz tega projekta. Ključ iz ameriškega projekta v EU ne deluje in obratno.</p>
     <div class="checks"><label><input type="checkbox" id="n-sxon" ${LS.get("sonioxOn",true)!==false?"checked":""}>Med snemanjem sproti prepisuj</label></div>
     <div class="row"><button class="btn primary" data-act="sx-shrani">Shrani</button><button class="btn ${ui.busy.sx?"busy":""}" data-act="sx-test" ${LS.get("sonioxKey","")&&!ui.busy.sx?"":"disabled"}>Preizkusi ključ</button></div>
   </section>
@@ -1287,6 +1301,7 @@ function vNastavitveSplosno(){
   <section class="panel"><h2>Varnostna kopija</h2>
     <p class="lede">Izvoz podatkov vseh družb v datoteko (brez zvočnih posnetkov). Z uvozom lahko prenesete tudi podatke iz različice aplikacije v Claudu; obstoječi podatki se ohranijo.</p>
     <div class="row"><button class="btn" data-act="izvozi">Izvozi podatke</button><label class="btn" for="uvozFile">Uvozi podatke</label><input type="file" id="uvozFile" accept=".json,application/json" hidden></div>
+    ${vBackupOd()}
   </section>
 
   <section class="panel"><h3>Namestitev</h3>
@@ -1294,7 +1309,7 @@ function vNastavitveSplosno(){
       <li><strong>Windows:</strong> v Edgeu ali Chromu kliknite ikono za namestitev v naslovni vrstici ali gumb »Namesti aplikacijo« zgoraj.</li>
       <li><strong>iPhone:</strong> v Safariju tapnite Deli → Dodaj na začetni zaslon. Odpirajte jo vedno z ikone na začetnem zaslonu.</li>
     </ul>
-    <p class="small muted">Različica 2 · ${isStandalone()?"nameščena aplikacija":"v brskalniku"}</p>
+    <p class="small muted">Različica 4 · ${isStandalone()?"nameščena aplikacija":"v brskalniku"}</p>
   </section>`;
 }
 
@@ -1534,6 +1549,610 @@ function koledar(){
   toast(`V koledar: ${ev.length} dogodkov. Na iPhonu izberite »Dodaj vse«; na računalniku odprite datoteko v Outlooku.`,7000);
 }
 
+/* =========================================================
+   RAZLIČICA 3: zaklep aplikacije, samodejne varnostne kopije,
+   koledar Outlook, iskanje, člani in letni načrt
+   ========================================================= */
+const DEV=(()=>{let d=LS.get("deviceId","");if(!d){d=uid();LS.set("deviceId",d)}return d})();
+const nz=s=>String(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"");
+const addYear=iso=>{const d=new Date(iso+"T12:00");d.setFullYear(d.getFullYear()+1);return d.toISOString().slice(0,10)};
+const liveCol=c=>Object.entries(D.col[c]||{}).filter(([,r])=>r&&!r._d);
+const druzbeNazivi=()=>Object.fromEntries(liveCol("druzbe").map(([k,r])=>[k,r.naziv||"Brez naziva"]));
+
+/* ---------- 1: zaklep aplikacije ---------- */
+const b64u={enc:buf=>{const u=new Uint8Array(buf);let s="";for(let i=0;i<u.length;i++)s+=String.fromCharCode(u[i]);return btoa(s).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"")},
+  dec:s=>{s=String(s).replace(/-/g,"+").replace(/_/g,"/");while(s.length%4)s+="=";const b=atob(s);const u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u.buffer}};
+const LOCK_MINS=[[0,"takoj, ko aplikacijo zaprete ali preklopite"],[1,"po 1 minuti"],[5,"po 5 minutah"],[15,"po 15 minutah"],[30,"po 30 minutah"]];
+const bioIme=()=>isIOS?"Face ID / Touch ID":(/Windows/.test(navigator.userAgent)?"Windows Hello":"prstni odtis ali obraz");
+const Lock={locked:false,hiddenAt:0,lastAct:Date.now(),
+  cfg(){return LS.get("lock",null)},
+  on(){const c=this.cfg();return !!(c&&c.hash&&c.salt)},
+  mins(){const c=this.cfg();return c&&c.mins!=null?+c.mins:5},
+  setMins(m){const c=this.cfg();if(c)LS.set("lock",{...c,mins:+m})},
+  async hash(pin,salt){
+    const k=await crypto.subtle.importKey("raw",new TextEncoder().encode(pin),"PBKDF2",false,["deriveBits"]);
+    const bits=await crypto.subtle.deriveBits({name:"PBKDF2",salt:b64u.dec(salt),iterations:150000,hash:"SHA-256"},k,256);
+    return b64u.enc(bits);
+  },
+  async setPin(pin,mins){const salt=b64u.enc(crypto.getRandomValues(new Uint8Array(16)));const c=this.cfg()||{};
+    LS.set("lock",{...c,salt,hash:await this.hash(pin,salt),mins:mins!=null?+mins:(c.mins!=null?c.mins:5)})},
+  async check(pin){const c=this.cfg();if(!c||!c.hash)return true;return (await this.hash(String(pin||""),c.salt))===c.hash},
+  async bioAvail(){try{return !!(window.PublicKeyCredential&&window.isSecureContext&&await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable())}catch(e){return false}},
+  async bioRegister(){
+    const cred=await navigator.credentials.create({publicKey:{challenge:crypto.getRandomValues(new Uint8Array(32)),
+      rp:{name:"Nadzorni svet",id:location.hostname},
+      user:{id:crypto.getRandomValues(new Uint8Array(16)),name:"nadzorni-svet",displayName:"Nadzorni svet"},
+      pubKeyCredParams:[{type:"public-key",alg:-7},{type:"public-key",alg:-257}],
+      authenticatorSelection:{authenticatorAttachment:"platform",userVerification:"required",residentKey:"discouraged"},
+      timeout:60000,attestation:"none"}});
+    if(!cred)throw new Error("preklicano");
+    const c=this.cfg()||{};LS.set("lock",{...c,cred:b64u.enc(cred.rawId)});
+  },
+  async bioCheck(){
+    const c=this.cfg();if(!c||!c.cred)return false;
+    const a=await navigator.credentials.get({publicKey:{challenge:crypto.getRandomValues(new Uint8Array(32)),rpId:location.hostname,
+      allowCredentials:[{type:"public-key",id:b64u.dec(c.cred)}],userVerification:"required",timeout:60000}});
+    if(!a||!a.response||!a.response.authenticatorData)return false;
+    return (new Uint8Array(a.response.authenticatorData)[32]&4)===4; // zastavica UV: uporabnik je bil preverjen
+  },
+  bioOff(){const c=this.cfg();if(c){delete c.cred;LS.set("lock",c)}},
+  lock(){if(!this.on()||this.locked)return;this.locked=true;this.paint()},
+  unlock(){this.locked=false;this.lastAct=Date.now();LS.set("lockFails",0);LS.set("lockUntil",0);this.paint();render()},
+  async wipe(){
+    WIPING=true;
+    const keep={clientId:LS.get("clientId",""),tenant:LS.get("tenant","")};
+    try{await IDB.delPrefix("kv","");await IDB.delPrefix("chunks","");await IDB.delPrefix("blobs","")}catch(e){}
+    try{localStorage.clear();sessionStorage.clear()}catch(e){}
+    if(keep.clientId)LS.set("clientId",keep.clientId);if(keep.tenant)LS.set("tenant",keep.tenant);
+    location.replace(location.pathname);
+  },
+  paint(){
+    const hdr=document.querySelector("header.top");let o=$("#lockScreen");
+    if(!this.locked){if(o)o.remove();if(hdr)hdr.inert=false;main.inert=false;return}
+    if(hdr)hdr.inert=true;main.inert=true;
+    if(o)return;
+    const c=this.cfg()||{};
+    o=document.createElement("div");o.id="lockScreen";o.setAttribute("role","dialog");o.setAttribute("aria-modal","true");o.setAttribute("aria-label","Aplikacija je zaklenjena");
+    o.innerHTML=`<div class="lockbox"><div class="eyebrow">Nadzorni svet</div><h2>Aplikacija je zaklenjena</h2>
+      <form id="lockForm" autocomplete="off"><input type="password" id="lockPin" inputmode="numeric" pattern="[0-9]*" maxlength="12" placeholder="Koda" aria-label="Koda za odklep" autocomplete="off">
+        <button class="btn primary" type="submit">Odkleni</button></form>
+      ${c.cred?`<button class="btn" type="button" id="lockBio">Odkleni (${esc(bioIme())})</button>`:""}
+      <p class="small" id="lockMsg" role="status"></p>
+      <details class="small muted"><summary>Pozabljena koda</summary>
+        <p>Podatke lahko izbrišete s te naprave. Po ponovni prijavi v OneDrive se znova prenesejo. Posnetki, ki še niso naloženi v OneDrive, se pri tem izgubijo.</p>
+        <button class="btn danger" type="button" id="lockReset">Izbriši podatke na tej napravi</button></details></div>`;
+    document.body.appendChild(o);
+    const msg=t=>{const m=$("#lockMsg");if(m)m.textContent=t};
+    $("#lockForm").addEventListener("submit",async e=>{e.preventDefault();
+      const until=LS.get("lockUntil",0);if(Date.now()<until){msg(`Preveč napačnih poskusov. Poskusite znova čez ${Math.ceil((until-Date.now())/1000)} s.`);return}
+      const inp=$("#lockPin");const ok=await this.check(inp.value);
+      if(ok){this.unlock();return}
+      const f=LS.get("lockFails",0)+1;LS.set("lockFails",f);inp.value="";
+      if(f>=5){const s=Math.min(300,30*Math.pow(2,f-5));LS.set("lockUntil",Date.now()+s*1000);msg(`Napačna koda. Počakajte ${s} s.`)}else msg("Napačna koda.");
+    });
+    const bio=$("#lockBio");if(bio)bio.addEventListener("click",async()=>{try{if(await this.bioCheck())this.unlock();else msg("Odklep ni uspel. Vpišite kodo.")}catch(e){msg("Odklep ni uspel. Vpišite kodo.")}});
+    const rs=$("#lockReset");rs.addEventListener("click",()=>{if(rs.dataset.armed){this.wipe();return}rs.dataset.armed="1";rs.classList.add("armed");rs.textContent="Potrdite: izbriši podatke na tej napravi";setTimeout(()=>{if(rs.isConnected){delete rs.dataset.armed;rs.classList.remove("armed");rs.textContent="Izbriši podatke na tej napravi"}},5000)});
+    if(!isIOS)setTimeout(()=>{const p=$("#lockPin");if(p)p.focus()},60);
+  }
+};
+["pointerdown","keydown","touchstart"].forEach(t=>document.addEventListener(t,()=>{Lock.lastAct=Date.now()},{passive:true,capture:true}));
+document.addEventListener("visibilitychange",()=>{
+  if(!Lock.on()||Rec.active)return;
+  if(document.visibilityState==="hidden"){Lock.hiddenAt=Date.now();if(Lock.mins()===0)Lock.lock()}
+  else if(Lock.hiddenAt&&Date.now()-Lock.hiddenAt>=Lock.mins()*60000)Lock.lock();
+});
+setInterval(()=>{if(Lock.on()&&!Lock.locked&&!Rec.active&&document.visibilityState==="visible"){const m=Lock.mins()||5;if(Date.now()-Lock.lastAct>m*60000)Lock.lock()}},20000);
+const skipLockOnce=()=>{try{sessionStorage.setItem("ns.unlocked",String(Date.now()))}catch(e){}};
+function vZaklep(){
+  const on=Lock.on(),c=Lock.cfg()||{};
+  const pinFld=(id,l)=>`<label class="fld">${l}<input type="password" id="${id}" inputmode="numeric" pattern="[0-9]*" maxlength="12" autocomplete="new-password"></label>`;
+  return `<section class="panel"><div class="panel-head"><h2>Zaklep aplikacije</h2>${on?`<span class="chip good">Vklopljeno</span>`:`<span class="chip">Izklopljeno</span>`}</div>
+    <p class="lede">Ob odprtju in po nedejavnosti aplikacija zahteva kodo${ui.bioAvail?` ali ${esc(bioIme())}`:""}. Zaklep velja samo za to napravo, zato ga vklopite na vsaki napravi posebej. Zaščiti pred vpogledom, če kdo vzame vaš odklenjen telefon ali računalnik; zaklep naprave samo pa ostaja pomemben.</p>
+    ${on?`<div class="fields"><label class="fld">Zakleni<select id="lk-mins">${LOCK_MINS.map(([m,l])=>`<option value="${m}" ${Lock.mins()===m?"selected":""}>${l}</option>`).join("")}</select></label></div>
+      ${ui.bioAvail?(c.cred?`<div class="row"><span class="chip good">${esc(bioIme())}: vklopljeno</span><button class="btn ghost" data-act="lock-bio-off">Izklopi</button></div>`
+        :`<div class="row"><button class="btn" data-act="lock-bio-on">Vklopi odklepanje (${esc(bioIme())})</button></div>`):""}
+      <div class="row"><button class="btn" data-act="lock-zdaj">Zakleni zdaj</button></div>
+      <details class="small"><summary style="cursor:pointer">Spremeni ali izklopi kodo</summary>
+        <div class="fields" style="margin-top:8px">${pinFld("lk-cur","Trenutna koda")}${pinFld("lk-new","Nova koda (4–12 številk)")}${pinFld("lk-new2","Ponovite novo kodo")}</div>
+        <div class="row" style="margin-top:8px"><button class="btn" data-act="lock-spremeni">Spremeni kodo</button><button class="btn ghost danger" data-act="lock-izklopi">Izklopi zaklep</button></div></details>`
+    :`<div class="fields">${pinFld("lk-new","Koda (4–12 številk)")}${pinFld("lk-new2","Ponovite kodo")}
+        <label class="fld">Zakleni<select id="lk-mins-new">${LOCK_MINS.map(([m,l])=>`<option value="${m}" ${m===5?"selected":""}>${l}</option>`).join("")}</select></label></div>
+      <div class="row"><button class="btn primary" data-act="lock-vklopi">Vklopi zaklep</button></div>`}
+  </section>`;
+}
+async function lockAct(a){
+  const v=id=>(($("#"+id)||{}).value||"").trim();
+  const newPin=()=>{const p=v("lk-new"),p2=v("lk-new2");if(!/^\d{4,12}$/.test(p)){toast("Koda mora imeti od 4 do 12 številk.");return null}if(p!==p2){toast("Kodi se ne ujemata.");return null}return p};
+  switch(a){
+    case "lock-vklopi":{const p=newPin();if(!p)return;await Lock.setPin(p,v("lk-mins-new")||5);toast("Zaklep je vklopljen.");
+      if(ui.bioAvail)toast(`Zaklep je vklopljen. Spodaj lahko vklopite še odklepanje (${bioIme()}).`,6000);render();return}
+    case "lock-spremeni":{if(!await Lock.check(v("lk-cur"))){toast("Trenutna koda ni pravilna.");return}const p=newPin();if(!p)return;await Lock.setPin(p);toast("Koda je spremenjena.");render();return}
+    case "lock-izklopi":{if(!await Lock.check(v("lk-cur"))){toast("Za izklop vpišite trenutno kodo.");return}LS.set("lock",null);toast("Zaklep je izklopljen.");render();return}
+    case "lock-bio-on":try{await Lock.bioRegister();toast(`Odklepanje (${bioIme()}) je vklopljeno.`)}catch(e){toast("Vklop ni uspel"+(e&&e.name==="NotAllowedError"?" (preklicano).":": "+(e.message||e)),6000)}render();return;
+    case "lock-bio-off":Lock.bioOff();toast("Odklepanje z biometrijo je izklopljeno.");render();return;
+    case "lock-zdaj":Lock.lock();return;
+  }
+}
+
+/* ---------- 2: samodejne varnostne kopije v OneDrivu ---------- */
+const BK_DIR="Varnostne kopije",BK_KEEP=12,BK_DAYS=7;
+const Backup={busy:false,
+  path(){return `/me/drive/special/approot:/${encodeURIComponent(BK_DIR)}`},
+  async list(){
+    const r=await Sync.graph(this.path()+":/children?$select=id,name,size,lastModifiedDateTime&$top=200");
+    if(r.status===404)return [];if(!r.ok)throw new Error("OneDrive "+r.status);
+    const j=await r.json();return (j.value||[]).filter(x=>/^ns-kopija-.*\.json$/.test(x.name)).sort((a,b)=>b.name.localeCompare(a.name));
+  },
+  async ensureDir(){
+    const r=await Sync.graph("/me/drive/special/approot/children",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:BK_DIR,folder:{},"@microsoft.graph.conflictBehavior":"fail"})});
+    if(!r.ok&&r.status!==409)throw new Error("OneDrive "+r.status);
+  },
+  payload(){const col={};COLS.forEach(c=>{if(c==="koledar")return;col[c]=Object.fromEntries(liveCol(c))});
+    return JSON.stringify({format:"nadzorni-svet",verzija:2,izvozeno:new Date().toISOString(),samodejna:true,col})},
+  name(){const d=new Date(),p=n=>String(n).padStart(2,"0");return `ns-kopija-${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.json`},
+  hasData(){return liveCol("druzbe").length>0},
+  async make(){
+    if(this.busy)return;if(!this.hasData())throw new Error("ni podatkov za kopijo");
+    this.busy=true;
+    try{
+      await this.ensureDir();
+      await Sync.uploadLarge(BK_DIR+"/"+this.name(),new Blob([this.payload()],{type:"application/json"}));
+      LS.set("bkLast",Date.now());
+      const l=await this.list();
+      for(const x of l.slice(BK_KEEP)){try{await Sync.graph("/me/drive/items/"+x.id,{method:"DELETE"})}catch(e){}}
+      ui.bk=l.slice(0,BK_KEEP);
+    }finally{this.busy=false}
+  },
+  async maybe(){
+    if(!Sync.account||this.busy||!this.hasData())return;
+    if(Date.now()-LS.get("bkCheck",0)<6*3600e3)return;
+    LS.set("bkCheck",Date.now());
+    try{const l=await this.list();const newest=l[0]?Date.parse(l[0].lastModifiedDateTime):0;
+      if(!newest||Date.now()-newest>BK_DAYS*864e5)await this.make();else ui.bk=l;}
+    catch(e){LS.set("bkCheck",Date.now()-5*3600e3)} // ponovni poskus čez približno uro
+  },
+  async load(){if(!Sync.account){ui.bk=[];return}if(ui.bkLoading)return;ui.bkLoading=true;ui.bkErr="";
+    try{ui.bk=await this.list()}catch(e){ui.bk=[];ui.bkErr=String(e.message||e)}ui.bkLoading=false;rr()},
+  async restore(id){const b=await Sync.download(id);return importData(JSON.parse(await b.text()))}
+};
+function bkLabel(x){const m=x.name.match(/ns-kopija-(\d{4})-(\d{2})-(\d{2})_(\d{2})(\d{2})/);return m?`${+m[3]}. ${+m[2]}. ${m[1]} ob ${m[4]}:${m[5]}`:x.name}
+function vBackupOd(){
+  if(!Sync.account)return `<p class="small muted">Ko se prijavite v OneDrive, se enkrat na teden samodejno shrani varnostna kopija.</p>`;
+  if(ui.bk==null&&!ui.bkLoading)setTimeout(()=>Backup.load(),0);
+  const l=ui.bk||[];
+  return `<h3>Samodejne kopije v OneDrivu</h3>
+    <p class="small muted">Enkrat na teden se v OneDrive (Aplikacije → Nadzorni svet → Varnostne kopije) shrani kopija vseh podatkov, brez posnetkov. Hrani se zadnjih ${BK_KEEP} kopij. Obnova iz kopije vrne izbrisane ali manjkajoče zapise; novejših sprememb ne prepiše.</p>
+    ${ui.bkErr?`<p class="small" style="color:var(--bad)">Seznama ni bilo mogoče naložiti: ${esc(ui.bkErr)}</p>`:""}
+    ${ui.bk==null?`<p class="small muted">Nalagam seznam kopij …</p>`:l.length?`<div class="list">${l.map(x=>`<div class="item"><div class="main"><strong>${esc(bkLabel(x))}</strong><div class="small muted">${esc(fmtSize(x.size||0))}</div></div>
+      <div class="row"><button class="btn ghost" data-act="bk-prenesi" data-id="${x.id}">Prenesi</button><button class="btn ${ui.confirm==="bk-"+x.id?"danger armed":""}" data-act="bk-obnovi" data-id="${x.id}">${ui.confirm==="bk-"+x.id?"Potrdite obnovo":"Obnovi"}</button></div></div>`).join("")}</div>`
+      :`<p class="small muted">Kopij še ni. Prva bo narejena samodejno ali s spodnjim gumbom.</p>`}
+    <div class="row"><button class="btn ${ui.busy.bk?"busy":""}" data-act="bk-zdaj" ${ui.busy.bk?"disabled":""}>Naredi kopijo zdaj</button></div>`;
+}
+
+/* ---------- 3: koledar Outlook ---------- */
+const CAL_SCOPES=["Calendars.ReadWrite"];
+const Cal={running:false,again:false,t:null,err:"",
+  owner(){const r=(D.col.nastavitve||{}).koledar;return r&&!r._d&&r.naprava?r:null},
+  on(){const o=this.owner();return !!(Sync.account&&Sync.msal&&LS.get("calOn",false)&&o&&o.naprava===DEV)},
+  async token(){const r=await Sync.msal.acquireTokenSilent({scopes:CAL_SCOPES,account:Sync.account});return r.accessToken},
+  async api(path,opts={}){const t=await this.token();return fetch("https://graph.microsoft.com/v1.0"+path,{...opts,headers:{Authorization:"Bearer "+t,"Content-Type":"application/json",...(opts.headers||{})}})},
+  devName(){return isIOS?"iPhone":(/Windows/.test(navigator.userAgent)?"računalnik z Windows":"druga naprava")},
+  async connect(){
+    if(!Sync.account||!Sync.msal){toast("Najprej se prijavite v OneDrive.");return}
+    try{await this.token()}
+    catch(e){LS.set("calPending",true);await persistNow();skipLockOnce();Sync.msal.acquireTokenRedirect({scopes:CAL_SCOPES,account:Sync.account});return}
+    this.activate();
+  },
+  activate(){LS.set("calOn",true);write("nastavitve/koledar",{naprava:DEV,ime:this.devName(),od:new Date().toISOString()});
+    toast("Koledar Outlook je povezan. Seje in roki sklepov se bodo vpisovali vanj.",6000);this.soon(800)},
+  disconnect(){LS.set("calOn",false);const o=this.owner();if(o&&o.naprava===DEV)write("nastavitve/koledar",null);render()},
+  soon(ms=4000){if(!this.on())return;clearTimeout(this.t);this.t=setTimeout(()=>this.run(),ms)},
+  desired(){
+    const t=today(),out={},dn=druzbeNazivi(),p2=n=>String(n).padStart(2,"0");
+    liveCol("seje").forEach(([id,s])=>{if(!s.datum||!dn[s.druzbaId]||s.datum<t)return;
+      const ura=/^\d{1,2}:\d{2}$/.test(s.ura||"")?s.ura:"13:00";const [h,m]=ura.split(":").map(Number);const eh=Math.min(h+2,23);
+      const dop=s.vrsta==="korespondencna";
+      out["seja-"+id]={subject:`${s.stevilka}. ${dop?"dopisna seja":"seja"} NS – ${dn[s.druzbaId]}`,
+        body:{contentType:"text",content:`Dnevni red:\n${(s.tocke||[]).map((x,i)=>`${i+1}. ${x.naslov||""}`).join("\n")}\n\nVpisala aplikacija Nadzorni svet.`},
+        start:{dateTime:`${s.datum}T${p2(h)}:${p2(m)}:00`,timeZone:"Europe/Ljubljana"},
+        end:{dateTime:`${s.datum}T${p2(eh)}:${p2(eh===h?Math.min(m+59,59):m)}:00`,timeZone:"Europe/Ljubljana"},
+        location:{displayName:s.kraj||""},isAllDay:false,showAs:"busy",isReminderOn:true,reminderMinutesBeforeStart:1440}});
+    liveCol("sklepi").forEach(([id,k])=>{if(!k.rok||!isOpen(k)||!dn[k.druzbaId]||k.rok<t)return;
+      out["sklep-"+id]={subject:`Rok sklepa${k.oznaka?" "+k.oznaka:""} – ${trunc(k.besedilo,70)} (${dn[k.druzbaId]})`,
+        body:{contentType:"text",content:`${dn[k.druzbaId]}\n\n${k.besedilo||""}\n\nZadolžen: ${k.zadolzen||"–"}\n\nVpisala aplikacija Nadzorni svet.`},
+        start:{dateTime:`${k.rok}T00:00:00`,timeZone:"Europe/Ljubljana"},end:{dateTime:`${addDays(k.rok,1)}T00:00:00`,timeZone:"Europe/Ljubljana"},
+        isAllDay:true,showAs:"free",isReminderOn:true,reminderMinutesBeforeStart:900}});
+    return out;
+  },
+  hash(o){const s=JSON.stringify(o);let h=0;for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))|0;return String(h)},
+  async run(){
+    if(!this.on())return;if(this.running){this.again=true;return}if(!navigator.onLine)return;
+    this.running=true;let n=0;const t=today();
+    try{
+      const want=this.desired();const map=Object.fromEntries(liveCol("koledar"));
+      for(const [key,ev] of Object.entries(want)){
+        const h=this.hash(ev),m=map[key];if(m&&m.h===h)continue;
+        if(m&&m.eventId){
+          const r=await this.api("/me/events/"+encodeURIComponent(m.eventId),{method:"PATCH",body:JSON.stringify(ev)});
+          if(r.ok){write("koledar/"+key,{eventId:m.eventId,h});n++;continue}
+          if(r.status!==404)throw new Error("Outlook "+r.status);
+        }
+        const r=await this.api("/me/events",{method:"POST",body:JSON.stringify(ev)});
+        if(r.status===401||r.status===403)throw {code:"consent"};
+        if(!r.ok)throw new Error("Outlook "+r.status);
+        const j=await r.json();write("koledar/"+key,{eventId:j.id,h});n++;
+      }
+      const dn=druzbeNazivi();
+      for(const [key,m] of Object.entries(map)){
+        if(want[key])continue;
+        const i=key.indexOf("-"),typ=key.slice(0,i),id=key.slice(i+1);
+        const src=(D.col[typ==="seja"?"seje":"sklepi"]||{})[id];
+        const gone=!src||src._d||!dn[src.druzbaId]||(typ==="sklep"&&(!isOpen(src)||!src.rok))||(typ==="seja"&&!src.datum);
+        const moved=src&&!src._d&&((typ==="seja"&&src.datum&&src.datum<t)||(typ==="sklep"&&src.rok&&src.rok<t))&&(src._u||0)>(m._u||0);
+        if(!gone&&!moved)continue; // pretekli dogodki ostanejo v koledarju
+        if(m.eventId){const r=await this.api("/me/events/"+encodeURIComponent(m.eventId),{method:"DELETE"});if(!r.ok&&r.status!==404)throw new Error("Outlook "+r.status)}
+        write("koledar/"+key,null);n++;
+      }
+      this.err="";LS.set("calLast",Date.now());
+    }catch(e){
+      this.err=(e&&e.code==="consent")||(window.msal&&e instanceof msal.InteractionRequiredAuthError)?"Dovoljenje za koledar je poteklo – kliknite »Poveži koledar znova«.":String((e&&(e.message||e.errorMessage))||e);
+    }
+    this.running=false;if(ui.tab==="nastavitve")rr();
+    if(this.again){this.again=false;this.soon()}
+  },
+  async clearAll(){
+    const map=liveCol("koledar");let n=0;
+    for(const [key,m] of map){if(m.eventId){const r=await this.api("/me/events/"+encodeURIComponent(m.eventId),{method:"DELETE"});if(!r.ok&&r.status!==404)throw new Error("Outlook "+r.status)}write("koledar/"+key,null);n++}
+    return n;
+  }
+};
+function vKoledar(){
+  const o=Cal.owner(),on=Cal.on(),last=LS.get("calLast",null);
+  const n=liveCol("koledar").length;
+  return `<section class="panel"><div class="panel-head"><h2>Koledar Outlook</h2>${on?`<span class="chip good">Povezano</span>`:o?`<span class="chip acc">Povezano na drugi napravi</span>`:`<span class="chip">Ni povezano</span>`}</div>
+    <p class="lede">Prihodnje seje in roki odprtih sklepov vseh družb se samodejno vpisujejo v vaš koledar Outlook in posodabljajo ob vsaki spremembi. Opomnik za sejo dobite dan prej, za rok sklepa dan prej ob 9.00. Ko je sklep realiziran ali izbrisan, se dogodek odstrani.</p>
+    ${!Sync.account?`<p class="small muted">Najprej se prijavite v OneDrive (zgoraj).</p>`
+    :on?`<p class="small">${n} dogodkov v koledarju${last?` · zadnja uskladitev ${esc(new Date(last).toLocaleString("sl-SI"))}`:""}</p>
+      ${Cal.err?`<p class="small" style="color:var(--bad)">${esc(Cal.err)}</p>`:""}
+      <div class="row"><button class="btn" data-act="cal-run">Uskladi koledar zdaj</button>${Cal.err?`<button class="btn primary" data-act="cal-on">Poveži koledar znova</button>`:""}
+        <button class="btn ghost" data-act="cal-off">Prekini povezavo</button>
+        <button class="btn ghost ${ui.confirm==="cal-clear"?"danger armed":"danger"}" data-act="cal-clear">${ui.confirm==="cal-clear"?"Potrdite: odstrani vse vpisane dogodke":"Odstrani vpisane dogodke"}</button></div>`
+    :o?`<p class="small">Dogodke vpisuje naprava »${esc(o.ime||"druga naprava")}« (povezano ${esc(fmtDate((o.od||"").slice(0,10)))}). Dogodki se v Outlooku vidijo na vseh napravah, zato povezava tu ni potrebna.</p>
+      <div class="row"><button class="btn" data-act="cal-on">Prevzemi vpisovanje na tej napravi</button></div>`
+    :`<div class="row"><button class="btn primary" data-act="cal-on">Poveži koledar Outlook</button></div>
+      <p class="small muted">Microsoft vas ob prvi povezavi vpraša za dovoljenje za dostop do koledarja. Povežite ga na eni napravi, na primer na računalniku; dogodki se nato vidijo povsod, kjer uporabljate Outlook.</p>`}
+  </section>`;
+}
+
+/* ---------- 4: iskanje ---------- */
+const TIP_ISK={seja:"Seja",prepis:"Prepis",sklep:"Sklep",zapisnik:"Pretekli zapisnik",porocilo:"Poročilo",direktor:"Direktor",nacrt:"Letni načrt",izjava:"Izjava",druzba:"Družba"};
+const qTerms=q=>nz(q).trim().split(/\s+/).filter(w=>w.length>=2).map(w=>w.length>=7?w.slice(0,-2):w.length>=5?w.slice(0,-1):w); // koren besede: »čistilna« najde tudi »čistilni«, »čistilne«
+function iskanje(q){
+  const Q=qTerms(q);if(!Q.length)return [];
+  const dn=druzbeNazivi(),res=[];
+  const strs=o=>Object.entries(o||{}).filter(([k,v])=>typeof v==="string"&&!/^(id|druzbaId|sejaId|_)/.test(k)&&v.length<400000).map(([,v])=>v).join("\n");
+  const add=(typ,did,title,meta,datum,text,open)=>{if(did&&!dn[did])return;const N=nz(text);if(!Q.every(w=>N.includes(w)))return;
+    const i=N.indexOf(Q[0]);res.push({typ,did,title,meta,datum:datum||"",text,i,open})};
+  liveCol("seje").forEach(([id,s])=>add("seja",s.druzbaId,`${s.stevilka}. seja`,fmtDateLong(s.datum),s.datum,
+    [`${s.stevilka}. seja`,s.kraj,...(s.tocke||[]).flatMap(x=>[x.naslov,x.gradivo,x.predlog,...(x.priloge||[]).map(p=>p.ime)]),s.vabilo,s.zapisnik].filter(Boolean).join("\n"),{seja:id}));
+  liveCol("prepisi").forEach(([id,p])=>{const s=(D.col.seje||{})[id];if(!s||s._d)return;add("prepis",s.druzbaId,`Prepis ${s.stevilka}. seje`,fmtDate(s.datum),s.datum,p.besedilo||"",{seja:id})});
+  liveCol("sklepi").forEach(([id,k])=>add("sklep",k.druzbaId,`Sklep${k.oznaka?" "+k.oznaka:""}`,`${(SKLEP_ST[k.status]||["Odprt"])[0]}${k.rok?" · rok "+fmtDate(k.rok):""}`,k.rok||(k.ustvarjeno||"").slice(0,10),
+    [k.oznaka,k.besedilo,k.zadolzen,k.porocilo].filter(Boolean).join("\n"),{sklep:id}));
+  liveCol("predloge").forEach(([id,p])=>add("zapisnik",p.druzbaId,p.naziv||"Pretekli zapisnik","",(p.datum||"").slice(0,10),[p.naziv,p.besedilo].join("\n"),{predloga:id}));
+  liveCol("porocila").forEach(([,p])=>add("porocilo",p.druzbaId,`Poročilo skupščini za ${p.leto}`,"",String(p.leto||""),strs(p),{porocilo:p.leto}));
+  liveCol("direktor").forEach(([,p])=>add("direktor",p.druzbaId,`Uspešnost direktorja ${p.leto}`,"",String(p.leto||""),strs(p),{direktor:p.leto}));
+  liveCol("nacrti").forEach(([,p])=>add("nacrt",p.druzbaId,`Letni načrt dela ${p.leto}`,"",String(p.leto||""),(p.vrstice||[]).map(v=>v.teme||"").join("\n"),{clani:p.leto}));
+  liveCol("izjave").forEach(([,p])=>add("izjava",p.druzbaId,`Izjave: ${p.ime||""}`,"","",[p.ime,p.opomba].filter(Boolean).join("\n"),{clani:true}));
+  liveCol("druzbe").forEach(([id,d])=>add("druzba",id,d.naziv||"Družba","","",[d.naziv,d.naslov,d.direktor,...(d.clani||[]).map(c=>c.ime)].filter(Boolean).join("\n"),{nastavitve:id}));
+  return res.sort((a,b)=>String(b.datum).localeCompare(String(a.datum))).slice(0,100);
+}
+function iskSnippet(text,i,Q){
+  const a=Math.max(0,i-80),b=Math.min(text.length,i+160);let s=text.slice(a,b).replace(/\s+/g," ");
+  const sN=nz(s);const marks=[];Q.forEach(w=>{let p=0;while((p=sN.indexOf(w,p))>=0){marks.push([p,p+w.length]);p+=w.length}});
+  marks.sort((x,y)=>x[0]-y[0]);let out="",pos=0;
+  marks.forEach(([x,y])=>{if(x<pos)return;out+=esc(s.slice(pos,x))+"<mark>"+esc(s.slice(x,y))+"</mark>";pos=y});
+  out+=esc(s.slice(pos));return (a>0?"… ":"")+out+(b<text.length?" …":"");
+}
+function iskRez(){
+  const q=ui.q||"";const Q=qTerms(q);
+  if(!Q.length)return `<p class="small muted">Vpišite vsaj dve črki. Išče po sejah (dnevni red, gradivo, vabilo, zapisnik), prepisih, sklepih, preteklih zapisnikih, poročilih in letnih načrtih vseh družb. Šumniki niso pomembni: »sklep cistilna« najde tudi »čistilna«.</p>`;
+  const r=iskanje(q);ui.iskRes=r;const dn=druzbeNazivi();const vec=Object.keys(dn).length>1;
+  if(!r.length)return `<p class="small muted">Ni zadetkov za »${esc(q)}«.</p>`;
+  return `<p class="small muted">${r.length>=100?"Prvih 100":r.length} zadetkov</p><div class="list">${r.map((x,i)=>`<button class="sresult" data-act="isk-odpri" data-id="${i}">
+    <span class="row" style="gap:8px"><span class="chip acc">${esc(TIP_ISK[x.typ]||x.typ)}</span><strong>${esc(x.title)}</strong>${x.meta?`<span class="small muted">${esc(x.meta)}</span>`:""}${vec&&x.did?`<span class="small muted">· ${esc(dn[x.did])}</span>`:""}</span>
+    <span class="small snip">${iskSnippet(x.text,Math.max(0,x.i),Q)}</span></button>`).join("")}</div>`;
+}
+function vIskanje(){
+  return `<section class="panel"><h2>Iskanje</h2>
+    <input type="search" id="isk" value="${esc(ui.q||"")}" placeholder="Išči po sejah, sklepih, zapisnikih in prepisih" autocomplete="off" enterkeyhint="search" aria-label="Iskalni niz">
+    <div id="iskRez">${iskRez()}</div></section>`;
+}
+function iskOdpri(i){
+  const r=(ui.iskRes||[])[+i];if(!r)return;const o=r.open;
+  if(r.did&&r.did!==S.druzbaId&&!o.nastavitve){LS.set("druzba",r.did);derive()}
+  if(o.seja){openSeja(o.seja);return}
+  if(o.sklep){ui.filter="vsi";go("sklepi");ui.sklepEdit=clone(S.sklepi.find(x=>x.id===o.sklep));render();window.scrollTo({top:0});return}
+  if(o.predloga){ui.predlogaOdprta=o.predloga;go("predloge");return}
+  if(o.porocilo){ui.porLeto=+o.porocilo;go("porocilo");return}
+  if(o.direktor){ui.leto=+o.direktor;go("direktor");return}
+  if(o.clani){if(o.clani!==true)ui.nacrtLeto=+o.clani;go("clani");return}
+  if(o.nastavitve){LS.set("druzba",o.nastavitve);derive();go("nastavitve")}
+}
+
+/* ---------- 6: člani – izjave in letni načrt dela ---------- */
+const IZJ=[["neodvisnost","Izjava o neodvisnosti"],["nasprotje","Izjava o nasprotju interesov"]];
+const izjKey=ime=>nz(ime).replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"")||"clan";
+function izjStatus(datum){
+  if(!datum)return ["ni podana",""];
+  const exp=addYear(datum),t=today();
+  if(exp<t)return ["potekla "+fmtDate(exp),"bad"];
+  if(exp<=addDays(t,30))return ["poteče "+fmtDate(exp),"warn"];
+  return ["velja do "+fmtDate(exp),"good"];
+}
+function izjSet(kljuc,ime,patch){
+  const cur=S.izjave[kljuc]||{};
+  write("izjave/"+S.druzbaId+"_"+kljuc,{...strip(cur),druzbaId:S.druzbaId,kljuc,ime,...patch});
+}
+function izjOpozorila(){
+  if(!Object.keys(S.izjave||{}).length)return 0;
+  return druzba().clani.filter(c=>c.ime).filter(c=>{const r=S.izjave[izjKey(c.ime)]||{};return IZJ.some(([k])=>{const st=izjStatus(r[k])[1];return st==="bad"||st==="warn"||!r[k]})}).length;
+}
+const NACRT_VRSTE={redna:"redna seja",korespondencna:"dopisna seja"};
+const NACRT_PREDLOG=[
+  {mesec:3,vrsta:"redna",teme:"Obravnava letnega poročila za preteklo leto\nPoročilo o poslovanju v preteklem letu\nOcena uspešnosti direktorja za preteklo leto"},
+  {mesec:5,vrsta:"redna",teme:"Revidirano letno poročilo in poročilo revizorja\nPoročilo nadzornega sveta skupščini\nPredlog uporabe bilančnega dobička\nPoslovanje januar–marec"},
+  {mesec:9,vrsta:"redna",teme:"Poslovanje januar–junij\nRealizacija poslovnega načrta in sklepov"},
+  {mesec:12,vrsta:"redna",teme:"Poslovanje januar–september\nPoslovni načrt za naslednje leto\nLetni načrt dela nadzornega sveta za naslednje leto"}
+];
+function nacrtDoc(y){return S.nacrti[String(y)]||{leto:+y,vrstice:[]}}
+function nacrtSet(y,fn){const cur=clone(nacrtDoc(y));cur.vrstice=cur.vrstice||[];fn(cur);write("nacrti/"+S.druzbaId+"_"+y,{...strip(cur),leto:+y,druzbaId:S.druzbaId})}
+function nacrtSeja(y,i){
+  const v=nacrtDoc(y).vrstice[i];if(!v)return;
+  const nums=S.seje.map(s=>parseInt(s.stevilka,10)).filter(n=>isFinite(n));const id=uid(),d=druzba();
+  let datum=`${y}-${String(v.mesec||1).padStart(2,"0")}-15`;if(datum<today())datum=addDays(today(),14);
+  const teme=String(v.teme||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  const tocke=DEF_TOCKE.slice(0,-1).filter(n=>!(teme.length&&/poročilo o poslovanju/i.test(n)&&teme.some(t=>/poslovanj/i.test(t)))).concat(teme,[DEF_TOCKE[DEF_TOCKE.length-1]]).map(n=>({naslov:n,gradivo:"",predlog:""}));
+  write("seje/"+id,{stevilka:String(nums.length?Math.max(...nums)+1:1),datum,ura:"15:00",kraj:d.kraj||"",vrsta:v.vrsta||"redna",status:"priprava",tocke,
+    prisotni:d.clani.map(c=>c.ime).filter(Boolean),drugi:d.direktor?d.direktor+", direktor":"",vabilo:"",zapisnik:"",ustvarjeno:new Date().toISOString()});
+  nacrtSet(y,n=>{n.vrstice[i].sejaId=id});
+  openSeja(id);toast("Seja je ustvarjena iz letnega načrta. Preverite datum in dnevni red.",6000);
+}
+function nacrtWord(y){
+  const n=nacrtDoc(y),d=druzba();
+  const rows=[...n.vrstice].sort((a,b)=>(a.mesec||0)-(b.mesec||0));
+  if(!rows.length){toast("Načrt je prazen.");return}
+  const txt=[`LETNI NAČRT DELA NADZORNEGA SVETA`,`${d.naziv}`,`za leto ${y}`,"",
+    ...rows.flatMap(v=>[`${MESF[(v.mesec||1)-1].toUpperCase()} – ${(NACRT_VRSTE[v.vrsta]||"seja").toUpperCase()}`,...String(v.teme||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map(x=>"   – "+x),""]),
+    "",`Pripravila: ${predsednica()}, predsednica nadzornega sveta`].join("\n");
+  saveDocx(fname(`Letni_nacrt_dela_NS_${d.naziv}_${y}`)+".docx",textToW(txt));
+}
+function vClani(){
+  const d=druzba(),cl=d.clani.filter(c=>c.ime),y=ui.nacrtLeto||new Date().getFullYear(),n=nacrtDoc(y);
+  const izj=cl.length?`<div><table class="izjtbl"><thead><tr><th>Član</th>${IZJ.map(([,l])=>`<th>${l}<br><span style="text-transform:none;font-weight:400">datum podpisa</span></th>`).join("")}<th>Opomba</th></tr></thead><tbody>
+    ${cl.map(c=>{const k=izjKey(c.ime),r=S.izjave[k]||{};return `<tr><td><strong>${esc(c.ime)}</strong><div class="small muted">${esc(c.funkcija||"")}</div></td>
+      ${IZJ.map(([f])=>{const [t,cls]=izjStatus(r[f]);return `<td data-l="${esc(IZJ.find(x=>x[0]===f)[1])}"><input type="date" value="${esc(r[f]||"")}" data-izj="${f}" data-k="${esc(k)}" data-ime="${esc(c.ime)}" style="max-width:170px"><div style="margin-top:4px"><span class="chip ${cls}">${esc(t)}</span></div></td>`}).join("")}
+      <td data-l="Opomba"><input type="text" value="${esc(r.opomba||"")}" data-izj="opomba" data-k="${esc(k)}" data-ime="${esc(c.ime)}" placeholder="npr. prejeto po e-pošti"></td></tr>`}).join("")}</tbody></table></div>`
+    :emptyBox("Člani niso vpisani","Imena članov nadzornega sveta vpišite v Nastavitvah pri podatkih družbe.",`<button class="btn" data-tab="nastavitve">Odpri nastavitve</button>`);
+  const leta=[y-1,y,y+1].filter((v,i,a)=>a.indexOf(v)===i);[new Date().getFullYear()-1,new Date().getFullYear(),new Date().getFullYear()+1].forEach(v=>{if(!leta.includes(v))leta.push(v)});leta.sort();
+  const rows=n.vrstice.map((v,i)=>({v,i})).sort((a,b)=>(a.v.mesec||0)-(b.v.mesec||0));
+  const nacrt=`<section class="panel"><div class="panel-head"><h2>Letni načrt dela nadzornega sveta</h2><div class="row"><label class="small muted" for="nacrt-leto">Leto</label><select id="nacrt-leto" style="width:auto">${leta.map(l=>`<option ${l===y?"selected":""}>${l}</option>`).join("")}</select>
+      ${n.vrstice.length?`<button class="btn" data-act="nacrt-word">Prenesi v Word</button>`:""}</div></div>
+    <p class="lede">Okvirni razpored sej in tem za leto. Iz vsake vrstice lahko ustvarite sejo z dnevnim redom, ki že vsebuje načrtovane teme.</p>
+    ${rows.length?`<div class="list">${rows.map(({v,i})=>{const s=v.sejaId&&S.seje.find(x=>x.id===v.sejaId);return `<div class="item" style="flex-wrap:wrap">
+      <div class="fields" style="flex:1;min-width:260px;grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
+        <label class="fld">Mesec<select data-nc="mesec" data-i="${i}">${MESF.map((m,j)=>`<option value="${j+1}" ${(v.mesec||1)===j+1?"selected":""}>${m}</option>`).join("")}</select></label>
+        <label class="fld">Vrsta<select data-nc="vrsta" data-i="${i}">${Object.entries(NACRT_VRSTE).map(([k,l])=>`<option value="${k}" ${(v.vrsta||"redna")===k?"selected":""}>${l}</option>`).join("")}</select></label>
+        <label class="fld" style="grid-column:1/-1">Teme (vsaka v svojo vrstico)<textarea rows="3" data-nc="teme" data-i="${i}">${esc(v.teme||"")}</textarea></label></div>
+      <div class="row" style="align-self:flex-start">${s?`<button class="btn" data-act="odpri-sejo" data-id="${s.id}">Odpri ${esc(s.stevilka)}. sejo</button>`:`<button class="btn" data-act="nacrt-seja" data-id="${i}">Ustvari sejo</button>`}
+        <button class="btn ghost danger ${ui.confirm==="nc-"+i?"armed":""}" data-act="nacrt-brisi" data-id="${i}">${ui.confirm==="nc-"+i?"Potrdite":"Odstrani"}</button></div></div>`}).join("")}</div>`
+      :emptyBox("Načrt za "+y+" je prazen","Dodajte načrtovane seje ali začnite s tipičnim razporedom (letno poročilo, poročilo skupščini, polletje, poslovni načrt), ki ga nato prilagodite.",`<button class="btn primary" data-act="nacrt-predlog">Začni s tipičnim razporedom</button>`)}
+    <div class="row"><button class="btn" data-act="nacrt-dodaj">Dodaj sejo v načrt</button></div></section>`;
+  return `<section class="panel"><h2>Izjave članov nadzornega sveta</h2>
+    <p class="lede">Evidenca podpisanih izjav o neodvisnosti in o nasprotju interesov. Izjava se šteje za veljavno 12 mesecev od podpisa; 30 dni pred iztekom je označena rumeno, po izteku rdeče.</p>${izj}</section>`+nacrt;
+}
+async function v3Act(a,id){
+  switch(a){
+    case "bk-zdaj":ui.busy.bk=true;render();try{await Backup.make();toast("Varnostna kopija je shranjena v OneDrive.")}catch(e){toast("Kopija ni uspela: "+(e.message||e),6000)}ui.busy.bk=false;render();return true;
+    case "bk-obnovi":if(arm("bk-"+id)){toast("Obnavljam iz kopije …");try{const n=await Backup.restore(id);toast(n?`Obnovljenih ali dopolnjenih zapisov: ${n}.`:"Vsi zapisi iz kopije že obstajajo, obnova ni bila potrebna.",6000)}catch(e){toast("Obnova ni uspela: "+(e.message||e),6000)}}return true;
+    case "bk-prenesi":{const x=(ui.bk||[]).find(b=>b.id===id);try{const b=await Sync.download(id);saveFile(x?x.name:"ns-kopija.json",b)}catch(e){toast("Prenos ni uspel: "+(e.message||e))}return true}
+    case "cal-on":await Cal.connect();render();return true;
+    case "cal-off":Cal.disconnect();toast("Povezava s koledarjem je prekinjena. Že vpisani dogodki ostanejo v Outlooku.",6000);return true;
+    case "cal-run":await Cal.run();toast(Cal.err?"Koledar: "+Cal.err:"Koledar je usklajen.");render();return true;
+    case "cal-clear":if(arm("cal-clear")){try{const n=await Cal.clearAll();toast(`Odstranjenih dogodkov: ${n}.`)}catch(e){toast("Ni uspelo: "+(e.message||e))}render()}return true;
+    case "isk-odpri":iskOdpri(id);return true;
+    case "nacrt-dodaj":{const y=ui.nacrtLeto||new Date().getFullYear();nacrtSet(y,n=>n.vrstice.push({mesec:Math.min(12,new Date().getMonth()+2),vrsta:"redna",teme:""}));return true}
+    case "nacrt-predlog":{const y=ui.nacrtLeto||new Date().getFullYear();nacrtSet(y,n=>{n.vrstice=clone(NACRT_PREDLOG)});return true}
+    case "nacrt-brisi":if(arm("nc-"+id)){const y=ui.nacrtLeto||new Date().getFullYear();nacrtSet(y,n=>n.vrstice.splice(+id,1))}return true;
+    case "nacrt-seja":nacrtSeja(ui.nacrtLeto||new Date().getFullYear(),+id);return true;
+    case "nacrt-word":nacrtWord(ui.nacrtLeto||new Date().getFullYear());return true;
+  }
+  if(a&&a.startsWith("lock-")){await lockAct(a);return true}
+  return false;
+}
+document.addEventListener("keydown",e=>{
+  if(Lock.locked)return;
+  if((e.key==="k"&&(e.ctrlKey||e.metaKey))||(e.key==="/"&&!/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement||{}).tagName||""))){e.preventDefault();go("iskanje")}
+});
+
+/* =========================================================
+   RAZLIČICA 4: gradivo za seje v OneDrivu, vabila po e-pošti
+   (osnutek v Outlooku), pregled vseh družb
+   ========================================================= */
+const seg=s=>String(s||"").replace(/[\\/:*?"<>|#%\u0000-\u001f]+/g," ").replace(/\s+/g," ").trim().slice(0,120)||"brez imena";
+async function gTok(scopes){const r=await Sync.msal.acquireTokenSilent({scopes,account:Sync.account});return r.accessToken}
+async function gConsent(scopes,label){LS.set("consentPending",label);await persistNow();skipLockOnce();Sync.msal.acquireTokenRedirect({scopes,account:Sync.account})}
+
+/* ---------- 1: gradivo za seje (priloge v OneDrivu) ---------- */
+async function odEnsureFolder(rel){ // npr. "Gradivo/Družba/9. seja 2026-12-10"
+  const parts=rel.split("/");let parent="";
+  for(const p of parts){
+    const url=parent?`/me/drive/special/approot:/${parent.split("/").map(encodeURIComponent).join("/")}:/children`:"/me/drive/special/approot/children";
+    const r=await Sync.graph(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:p,folder:{},"@microsoft.graph.conflictBehavior":"fail"})});
+    if(!r.ok&&r.status!==409)throw new Error("OneDrive "+r.status);
+    parent=parent?parent+"/"+p:p;
+  }
+}
+function gradivoMapa(s){return `Gradivo/${seg(druzba().naziv)}/${seg(`${s.stevilka}. seja ${s.datum||""}`)}`}
+async function priloziGradivo(i,files){
+  const s=ui.draft;if(!s||!s.tocke[i])return;
+  if(!Sync.account){toast("Za pripenjanje gradiva se prijavite v OneDrive (Nastavitve → OneDrive).",6000);return}
+  if(!navigator.onLine){toast("Za pripenjanje gradiva potrebujete internetno povezavo.");return}
+  const mapa=gradivoMapa(s);ui.upl=ui.upl||{};
+  try{
+    await odEnsureFolder(mapa);
+    for(const f of files){
+      ui.upl[i]={ime:f.name,p:0};rr();
+      const item=await Sync.uploadLarge(mapa+"/"+seg(f.name),f,p=>{ui.upl[i]={ime:f.name,p};const m=$("#upl-"+i);if(m)m.textContent=`Nalagam ${f.name} … ${Math.round(p*100)} %`});
+      const t=ui.draft&&ui.draft.tocke[i];if(!t)break;
+      t.priloge=(t.priloge||[]).concat([{id:item.id,ime:item.name,velikost:item.size||f.size,url:item.webUrl||""}]);
+    }
+    delete ui.upl[i];
+    if(ui.draft&&ui.sejaId){write("seje/"+ui.sejaId,strip(ui.draft));const sv=savedSeja();ui._draftU=sv&&sv._u}
+    toast(files.length===1?"Gradivo je pripeto in shranjeno v OneDrive.":`Pripetih datotek: ${files.length}. Shranjene so v OneDrive.`);
+  }catch(e){delete ui.upl[i];toast("Nalaganje gradiva ni uspelo: "+(e.message||e.code||e),7000)}
+  render();
+}
+async function odstraniGradivo(i,j){
+  const t=ui.draft&&ui.draft.tocke[i];const p=t&&(t.priloge||[])[j];if(!p)return;
+  if(Sync.account&&p.id){try{const r=await Sync.graph("/me/drive/items/"+p.id,{method:"DELETE"});if(!r.ok&&r.status!==404)throw new Error("OneDrive "+r.status)}
+    catch(e){toast("Datoteke ni bilo mogoče izbrisati iz OneDriva: "+(e.message||e),6000);return}}
+  t.priloge.splice(j,1);
+  write("seje/"+ui.sejaId,strip(ui.draft));const sv=savedSeja();ui._draftU=sv&&sv._u;
+  toast("Gradivo je odstranjeno.");render();
+}
+function vPriloge(t,i){
+  const pl=t.priloge||[];const up=(ui.upl||{})[i];
+  return `<div class="priloge">${pl.map((p,j)=>`<span class="prl"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>
+      ${p.url?`<a href="${esc(p.url)}" target="_blank" rel="noopener" title="Odpri v OneDrivu">${esc(p.ime)}</a>`:esc(p.ime)}<span class="muted">${esc(fmtSize(p.velikost||0))}</span>
+      <button class="btn ghost small ${ui.confirm==="pr-"+i+"-"+j?"danger armed":""}" data-act="pril-brisi" data-id="${i}:${j}" aria-label="Odstrani ${esc(p.ime)}">${ui.confirm==="pr-"+i+"-"+j?"Potrdite":"×"}</button></span>`).join("")}
+    ${up?`<span class="small muted" id="upl-${i}">Nalagam ${esc(up.ime)} … ${Math.round(up.p*100)} %</span>`
+      :`<label class="btn ghost small" for="pf-${i}">+ Pripni gradivo</label><input type="file" id="pf-${i}" data-pril="${i}" multiple hidden>`}</div>`;
+}
+const vseP=s=>(s.tocke||[]).flatMap(t=>t.priloge||[]);
+
+/* ---------- 2: vabilo po e-pošti (osnutek v Outlooku) ---------- */
+const MAIL_SCOPES=["Mail.ReadWrite"];
+let CAPTURE=null; // med pripravo e-pošte saveFile shrani datoteke sem namesto prenosa
+const isMail=m=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(m||"").trim());
+function mailState(){
+  const s=ui.draft;if(!ui.mail||ui.mail.sejaId!==s.id){
+    const d=druzba();ui.mail={sejaId:s.id,to:d.clani.filter(c=>c.ime&&isMail(c.mail)).map(c=>c.mail.trim()),cc:false,vabilo:true,paket:false,priloge:true,link:null,busy:false}}
+  return ui.mail;
+}
+function mailBesedilo(s){
+  const d=druzba(),dop=s.vrsta==="korespondencna";
+  const L=["Spoštovani člani nadzornega sveta,",""];
+  if(dop)L.push(`v prilogi vam pošiljam gradivo za ${s.stevilka}. korespondenčno sejo nadzornega sveta družbe ${d.naziv}. Glasovanje poteka do ${fmtDateLong(s.datum)}${s.ura?", do "+s.ura+" ure":""}.`);
+  else L.push(`v prilogi vam pošiljam vabilo na ${s.stevilka}. sejo nadzornega sveta družbe ${d.naziv}, ki bo v ${fmtDateLong(s.datum)}${s.ura?", ob "+s.ura+" uri":""}${s.kraj?", "+s.kraj:""}, z gradivom.`);
+  L.push("","Dnevni red:");(s.tocke||[]).forEach((t,i)=>L.push(`${i+1}. ${t.naslov}`));
+  L.push("",dop?"Prosim, da svoj glas sporočite do navedenega roka.":"Prosim, da morebitno odsotnost pravočasno sporočite.","","Lep pozdrav,",predsednica(),"predsednica nadzornega sveta");
+  return L.join("\n");
+}
+async function capture(fn){CAPTURE=[];try{await fn();return CAPTURE}finally{CAPTURE=null}}
+async function pripraviEposto(){
+  const s=ui.draft,d=druzba(),m=mailState();
+  if(!Sync.account){toast("Za pripravo e-pošte se prijavite v OneDrive (Nastavitve → OneDrive).",6000);return}
+  const to=m.to.filter(isMail);if(!to.length){toast("Izberite vsaj enega prejemnika z e-naslovom.");return}
+  let tok;try{tok=await gTok(MAIL_SCOPES)}catch(e){await gConsent(MAIL_SCOPES,"mail");return}
+  m.busy=true;m.link=null;render();
+  try{
+    // priloge
+    const att=[];
+    if(m.vabilo){const vab=s.vabilo||sestaviVabilo();att.push(...await capture(()=>saveDocx(fname(`Vabilo_${s.stevilka}_seja_NS_${s.datum}`)+".docx",textToW(vab))))}
+    if(m.paket)att.push(...await capture(()=>paketGradiva()));
+    if(m.priloge)for(const p of vseP(s)){att.push({name:p.ime,blob:await Sync.download(p.id)})}
+    const total=att.reduce((a,x)=>a+x.blob.size,0);
+    if(total>24e6)throw new Error(`priloge skupaj merijo ${fmtSize(total)}, kar je preveč za e-pošto (največ okoli 24 MB). Večje gradivo delite prek OneDriva.`);
+    const api=(path,opts={})=>fetch("https://graph.microsoft.com/v1.0"+path,{...opts,headers:{Authorization:"Bearer "+tok,"Content-Type":"application/json",...(opts.headers||{})}});
+    const ime=e=>{const c=d.clani.find(x=>(x.mail||"").trim().toLowerCase()===e.toLowerCase());return c?c.ime:""};
+    const msg={subject:`${s.vrsta==="korespondencna"?"Korespondenčna seja":"Vabilo na sejo"} NS – ${s.stevilka}. seja, ${d.naziv} (${fmtDate(s.datum)})`,
+      body:{contentType:"HTML",content:`<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt">${esc(mailBesedilo(s)).replace(/\n/g,"<br>")}</div>`},
+      toRecipients:to.map(e=>({emailAddress:{address:e,name:ime(e)}})),
+      ccRecipients:m.cc&&isMail(d.direktorMail)?[{emailAddress:{address:d.direktorMail.trim(),name:d.direktor||""}}]:[]};
+    const r=await api("/me/messages",{method:"POST",body:JSON.stringify(msg)});
+    if(r.status===401||r.status===403){m.busy=false;await gConsent(MAIL_SCOPES,"mail");return}
+    if(!r.ok)throw new Error("Outlook "+r.status);
+    const j=await r.json();
+    for(const a of att){
+      const ab=await a.blob.arrayBuffer();
+      if(a.blob.size<3e6){
+        let bin="";const u=new Uint8Array(ab);for(let k=0;k<u.length;k+=0x8000)bin+=String.fromCharCode.apply(null,u.subarray(k,k+0x8000));
+        const q=await api(`/me/messages/${encodeURIComponent(j.id)}/attachments`,{method:"POST",body:JSON.stringify({"@odata.type":"#microsoft.graph.fileAttachment",name:a.name,contentBytes:btoa(bin)})});
+        if(!q.ok)throw new Error("priloga "+a.name+": "+q.status);
+      }else{
+        const q=await api(`/me/messages/${encodeURIComponent(j.id)}/attachments/createUploadSession`,{method:"POST",body:JSON.stringify({AttachmentItem:{attachmentType:"file",name:a.name,size:a.blob.size}})});
+        if(!q.ok)throw new Error("priloga "+a.name+": "+q.status);
+        const {uploadUrl}=await q.json();const CH=3*1024*1024;
+        for(let pos=0;pos<a.blob.size;pos+=CH){const end=Math.min(pos+CH,a.blob.size);
+          const u=await fetch(uploadUrl,{method:"PUT",headers:{"Content-Type":"application/octet-stream","Content-Range":`bytes ${pos}-${end-1}/${a.blob.size}`},body:a.blob.slice(pos,end)});
+          if(!u.ok)throw new Error("priloga "+a.name+": "+u.status)}
+      }
+    }
+    m.link=j.webLink||"https://outlook.office.com/mail/drafts";
+    toast("Osnutek e-pošte je v mapi Osnutki v Outlooku. Preglejte ga in pošljite.",7000);
+  }catch(e){toast("E-pošte ni bilo mogoče pripraviti: "+(e.message||e.errorMessage||e),8000)}
+  m.busy=false;render();
+}
+function vEposta(){
+  const s=ui.draft,d=druzba(),m=mailState(),cl=d.clani.filter(c=>c.ime),pl=vseP(s);
+  const brez=cl.filter(c=>!isMail(c.mail));
+  return `<details class="mailbox" ${m.link||m.busy?"open":""}><summary><strong>Pošlji vabilo po e-pošti</strong> <span class="small muted">– osnutek v Outlooku</span></summary>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:10px">
+    ${!Sync.account?`<p class="small muted">Najprej se prijavite v OneDrive (Nastavitve → OneDrive).</p>`:""}
+    <div class="fld"><span>Prejemniki</span><div class="checks">${cl.map((c,i)=>isMail(c.mail)?`<label><input type="checkbox" data-mailto="${esc(c.mail.trim())}" ${m.to.includes(c.mail.trim())?"checked":""}>${esc(c.ime)} <span class="muted small">${esc(c.mail)}</span></label>`:"").join("")}
+      ${isMail(d.direktorMail)?`<label><input type="checkbox" data-mailcc="1" ${m.cc?"checked":""}>V vednost: ${esc(d.direktor||"direktor")} <span class="muted small">${esc(d.direktorMail)}</span></label>`:""}</div>
+      ${brez.length?`<span class="small muted">Brez e-naslova: ${brez.map(c=>esc(c.ime)).join(", ")}. E-naslove vpišete v <button class="btn ghost small" data-tab="nastavitve">Nastavitvah</button>.</span>`:""}</div>
+    <div class="fld"><span>Priloge</span><div class="checks">
+      <label><input type="checkbox" data-mailopt="vabilo" ${m.vabilo?"checked":""}>Vabilo (Word)</label>
+      <label><input type="checkbox" data-mailopt="paket" ${m.paket?"checked":""}>Paket gradiva (Word: vabilo, zapisnik prejšnje seje, sklepi, poslovanje)</label>
+      ${pl.length?`<label><input type="checkbox" data-mailopt="priloge" ${m.priloge?"checked":""}>Pripeto gradivo (${pl.length} ${pl.length===1?"datoteka":pl.length<5?"datoteke":"datotek"}, ${esc(fmtSize(pl.reduce((a,p)=>a+(p.velikost||0),0)))})</label>`:""}</div></div>
+    <details class="small"><summary style="cursor:pointer">Besedilo e-pošte</summary><div class="pre" style="margin-top:6px">${esc(mailBesedilo(s))}</div><p class="small muted">Besedilo lahko pred pošiljanjem uredite v Outlooku.</p></details>
+    <div class="row"><button class="btn primary ${m.busy?"busy":""}" data-act="mail-pripravi" ${m.busy||!Sync.account?"disabled":""}>${m.busy?"Pripravljam osnutek ":"Pripravi osnutek v Outlooku"}</button>
+      ${m.link?`<a class="btn" href="${esc(m.link)}" target="_blank" rel="noopener">Odpri osnutek v Outlooku</a>`:""}</div>
+    ${isDirty()?`<p class="small" style="color:var(--warn)">Seja ima neshranjene spremembe. E-pošta se pripravi iz trenutnega besedila na zaslonu.</p>`:""}
+    <p class="small muted">Aplikacija ne pošlje ničesar sama: osnutek se shrani v mapo Osnutki v vašem Outlooku, kjer ga preverite in pošljete. Ob prvi uporabi Microsoft vpraša za dovoljenje za dostop do pošte.</p>
+    </div></details>`;
+}
+
+/* ---------- 3: pregled vseh družb ---------- */
+function izjOpozorilaZa(did){
+  const dr=(D.col.druzbe||{})[did];if(!dr)return 0;
+  const izj=Object.fromEntries(liveCol("izjave").filter(([,r])=>r.druzbaId===did).map(([,r])=>[r.kljuc,r]));
+  if(!Object.keys(izj).length)return 0;
+  return (dr.clani||[]).filter(c=>c.ime).filter(c=>{const r=izj[izjKey(c.ime)]||{};return IZJ.some(([k])=>{const st=izjStatus(r[k])[1];return st==="bad"||st==="warn"||!r[k]})}).length;
+}
+function vVseDruzbe(){
+  const dr=liveCol("druzbe");if(dr.length<2)return "";
+  const t=today(),t30=addDays(t,30),dn=druzbeNazivi();
+  const seje=liveCol("seje"),sk=liveCol("sklepi").filter(([,k])=>isOpen(k)&&dn[k.druzbaId]);
+  const rows=dr.sort((a,b)=>(a[1].naziv||"").localeCompare(b[1].naziv||"","sl")).map(([id,d])=>{
+    const nx=seje.filter(([,s])=>s.druzbaId===id&&s.datum>=t&&s.status!=="potrjena").sort((a,b)=>a[1].datum.localeCompare(b[1].datum))[0];
+    const nep=seje.filter(([,s])=>s.druzbaId===id&&s.datum<t&&s.status!=="potrjena").length;
+    const o=sk.filter(([,k])=>k.druzbaId===id),z=o.filter(([,k])=>k.rok&&k.rok<t).length,iz=izjOpozorilaZa(id);
+    return `<tr class="${id===S.druzbaId?"cur":""}"><td><button class="linkbtn" data-act="vse-odpri" data-id="${id}">${esc(d.naziv||"Brez naziva")}</button></td>
+      <td>${nx?`${esc(fmtDate(nx[1].datum))}${nx[1].ura?", "+esc(nx[1].ura):""} <span class="small muted">· ${esc(nx[1].stevilka)}. seja</span>`:`<span class="muted">ni sklicane</span>`}${nep?`<div class="small" style="color:var(--warn)">${nep} ${nep===1?"zapisnik ni potrjen":"zapisnikov ni potrjenih"}</div>`:""}</td>
+      <td class="r num">${o.length}</td><td class="r num" ${z?'style="color:var(--bad);font-weight:600"':""}>${z}</td>
+      <td>${iz?`<span class="chip warn">${iz} ${iz===1?"član":"članov"}</span>`:`<span class="muted small">v redu</span>`}</td></tr>`}).join("");
+  const roki=sk.filter(([,k])=>k.rok&&k.rok<=t30).sort((a,b)=>a[1].rok.localeCompare(b[1].rok)).slice(0,12);
+  const pr=seje.filter(([,s])=>dn[s.druzbaId]&&s.datum>=t&&s.datum<=addDays(t,45)).sort((a,b)=>a[1].datum.localeCompare(b[1].datum));
+  return `<section class="panel"><div class="panel-head"><h2>Vse družbe</h2><span class="small muted">${dr.length} družb</span></div>
+    <div style="overflow-x:auto"><table class="vse"><thead><tr><th>Družba</th><th>Naslednja seja</th><th class="r">Odprti sklepi</th><th class="r">Rok pretekel</th><th>Izjave</th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${pr.length||roki.length?`<div class="grid2">
+      <div><h3>Seje v naslednjih 45 dneh</h3>${pr.length?`<div class="list">${pr.map(([id,s])=>`<button class="item linkitem" data-act="vse-seja" data-id="${id}"><span class="main"><strong>${esc(fmtDate(s.datum))}${s.ura?", "+esc(s.ura):""}</strong> · ${esc(s.stevilka)}. seja<div class="small muted">${esc(dn[s.druzbaId])}</div></span>${chip(SEJA_ST,s.status)}</button>`).join("")}</div>`:`<p class="small muted">Ni sklicanih sej.</p>`}</div>
+      <div><h3>Roki sklepov v naslednjih 30 dneh in zapadli</h3>${roki.length?`<div class="list">${roki.map(([id,k])=>`<button class="item linkitem" data-act="vse-sklep" data-id="${id}"><span class="main">${esc(trunc(k.besedilo,110))}<div class="small muted">${esc(k.oznaka||"")} · ${esc(dn[k.druzbaId])}${k.zadolzen?" · "+esc(k.zadolzen):""}</div></span><span class="chip ${k.rok<t?"bad":"warn"}">${k.rok<t?"zapadel ":"rok "}${esc(fmtDate(k.rok))}</span></button>`).join("")}</div>`:`<p class="small muted">Ni bližnjih rokov.</p>`}</div></div>`:""}
+  </section>`;
+}
+async function v4Act(a,id,b){
+  switch(a){
+    case "pril-brisi":{const [i,j]=String(id).split(":").map(Number);if(arm("pr-"+i+"-"+j))await odstraniGradivo(i,j);return true}
+    case "mail-pripravi":await pripraviEposto();return true;
+    case "vse-odpri":setDruzba(id);go("pregled");return true;
+    case "vse-seja":{const s=(D.col.seje||{})[id];if(!s)return true;if(s.druzbaId!==S.druzbaId){LS.set("druzba",s.druzbaId);derive()}openSeja(id);return true}
+    case "vse-sklep":{const k=(D.col.sklepi||{})[id];if(!k)return true;if(k.druzbaId!==S.druzbaId){LS.set("druzba",k.druzbaId);derive()}ui.filter="vsi";go("sklepi");ui.sklepEdit=clone(S.sklepi.find(x=>x.id===id));render();window.scrollTo({top:0});return true}
+  }
+  return false;
+}
+
 /* ---------- dogodki ---------- */
 document.addEventListener("click",ev=>{
   const b=ev.target.closest("[data-act],[data-tab]");if(!b||b.disabled)return;
@@ -1544,6 +2163,9 @@ document.addEventListener("click",ev=>{
 function arm(key){if(ui.confirm===key){ui.confirm=null;return true}ui.confirm=key;clearTimeout(arm._t);arm._t=setTimeout(()=>{ui.confirm=null;rr()},4000);render();return false}
 async function act(a,id){
   const s=ui.draft;
+  if(await v3Act(a,id))return;
+  if(await v4Act(a,id))return;
+  if(a==="clan-dodaj"){await act("nastavitve-shrani");const r=strip(S.druzba||{});r.clani=(druzba().clani||[]).concat([{ime:"",funkcija:"član",mail:""}]);write("druzbe/"+S.druzbaId,r);render();return}
   switch(a){
     case "nova-seja":novaSeja();break;
     case "odpri-sejo":openSeja(id);break;
@@ -1635,14 +2257,14 @@ async function act(a,id){
       write("predloge/"+uid(),{naziv:n,besedilo:t.slice(0,MAXC),datum:new Date().toISOString()});ui.novaPredloga=false;toast("Zapisnik je dodan med predloge.");render();break}
     case "predloga-pokazi":ui.predlogaOdprta=ui.predlogaOdprta===id?null:id;render();break;
     case "predloga-brisi":if(arm("p-"+id)){write("predloge/"+id,null);render()}break;
-    case "nastavitve-shrani":{const cur=druzba();const d={pravila:(($("#n-pravila")||{}).value||"").trim(),naziv:$("#n-naziv").value.trim()||cur.naziv,naslov:$("#n-naslov").value.trim(),direktor:$("#n-direktor").value.trim(),kraj:$("#n-kraj").value.trim(),
-      clani:cur.clani.map((c,i)=>({ime:$("#n-cl-ime-"+i).value.trim(),funkcija:$("#n-cl-fun-"+i).value.trim()}))};
+    case "nastavitve-shrani":{const cur=druzba();const d={pravila:(($("#n-pravila")||{}).value||"").trim(),naziv:$("#n-naziv").value.trim()||cur.naziv,naslov:$("#n-naslov").value.trim(),direktor:$("#n-direktor").value.trim(),direktorMail:(($("#n-dirmail")||{}).value||"").trim(),kraj:$("#n-kraj").value.trim(),
+      clani:cur.clani.map((c,i)=>({ime:$("#n-cl-ime-"+i).value.trim(),funkcija:$("#n-cl-fun-"+i).value.trim(),mail:(($("#n-cl-mail-"+i)||{}).value||"").trim()}))};
       write("druzbe/"+S.druzbaId,{...strip(S.druzba||{}),...d});toast("Podatki družbe so shranjeni.");render();break}
     case "predloga-word-brisi":if(arm("pw")){const r=strip(S.druzba);delete r.wordPredloga;delete r.wordPredlogaIme;write("druzbe/"+S.druzbaId,r);render()}break;
     case "druzba-dodaj":{const n=(($("#nd-naziv")||{}).value||"").trim();if(!n){toast("Vpišite naziv družbe.");break}const nid=uid();write("druzbe/"+nid,{naziv:n,clani:[{ime:"",funkcija:"predsednica"},{ime:"",funkcija:"namestnik predsednice"},{ime:"",funkcija:"član"}]});setDruzba(nid);ui.tab="nastavitve";render();toast("Družba "+n+" je dodana. Dopolnite podatke in člane NS.");break}
     case "druzba-preklopi":setDruzba(id);break;
     case "druzba-brisi":if(arm("dr-"+id)){const now=Date.now();
-      PER_DRUZBA.concat(["finance","direktor"]).forEach(c=>Object.entries(D.col[c]||{}).forEach(([k,r])=>{if(r&&!r._d&&r.druzbaId===id){D.col[c][k]={_d:1,_u:now};if(c==="seje"&&D.col.prepisi[k])D.col.prepisi[k]={_d:1,_u:now}}}));
+      PER_DRUZBA.concat(["finance","direktor","porocila","izjave","nacrti"]).forEach(c=>Object.entries(D.col[c]||{}).forEach(([k,r])=>{if(r&&!r._d&&r.druzbaId===id){D.col[c][k]={_d:1,_u:now};if(c==="seje"&&D.col.prepisi[k])D.col.prepisi[k]={_d:1,_u:now}}}));
       write("druzbe/"+id,null);LS.set("druzba",null);derive();render();toast("Družba in vsi njeni podatki so izbrisani.")}break;
     case "od-prijava":Sync.login();break;
     case "od-odjava":Sync.logout();break;
@@ -1650,7 +2272,7 @@ async function act(a,id){
     case "client-shrani":{LS.set("clientId",$("#n-client").value.trim());LS.set("tenant",(($("#n-tenant")||{}).value||"").trim());toast("Client ID je shranjen.");Sync.msal=null;await Sync.init();render();break}
     case "key-shrani":LS.set("apiKey",$("#n-key").value.trim());LS.set("model",$("#n-model").value);toast("Nastavitve za Claude so shranjene.");render();break;
     case "key-test":{ui.busy.key=true;render();try{await claude("Odgovori samo z besedo: deluje",{maxTokens:10,model:"claude-haiku-5-5"});toast("Ključ deluje.")}catch(e){toast(errMsg(e),6000)}ui.busy.key=false;render();break}
-    case "sx-shrani":LS.set("sonioxKey",$("#n-sxkey").value.trim());LS.set("sonioxModel",$("#n-sxmodel").value.trim()||"stt-rt-v6");LS.set("sonioxOn",$("#n-sxon").checked);LS.set("sonioxLegacy",false);toast("Nastavitve za Soniox so shranjene.");render();break;
+    case "sx-shrani":LS.set("sonioxKey",$("#n-sxkey").value.trim());LS.set("sonioxModel",$("#n-sxmodel").value.trim()||"stt-rt-v6");LS.set("sonioxOn",$("#n-sxon").checked);LS.set("sonioxRegion",(($("#n-sxreg")||{}).value)||"us");LS.set("sonioxLegacy",false);toast("Nastavitve za Soniox so shranjene.");render();break;
     case "sx-test":{ui.busy.sx=true;render();try{await Live.test();toast("Ključ Soniox deluje.")}catch(e){toast("Ključ ne deluje: "+(e.message||e),7000)}ui.busy.sx=false;render();break}
     case "izvozi":exportData();break;
     case "skrij-ios":LS.set("hideIosTip",true);render();break;
@@ -1667,9 +2289,20 @@ document.addEventListener("input",ev=>{
   if(el.id==="vpr-text"){const v=el.value,y=ui.leto,P=finSum(y,ui.obd||undefined).period;clearTimeout(ui._vprT);if(P)ui._vprT=setTimeout(()=>saveVprasanja(y,P.do,v),700);return}
   if(el.dataset.por){const k=el.dataset.por,v=el.value,y=ui.porLeto||(new Date().getFullYear()-1);clearTimeout(ui._porT);ui._porT=setTimeout(()=>porSet(y,{[k]:v}),600);return}
   if(el.id==="manualRes"&&ui.manual){ui.manual.result=el.value;return}
+  if(el.id==="isk"){ui.q=el.value;clearTimeout(ui._iskT);ui._iskT=setTimeout(()=>{const r=$("#iskRez");if(r)r.innerHTML=iskRez()},120);return}
+  if(el.dataset.nc==="teme"){const i=+el.dataset.i,v=el.value,y=ui.nacrtLeto||new Date().getFullYear();clearTimeout(ui._ncT);ui._ncT=setTimeout(()=>nacrtSet(y,n=>{if(n.vrstice[i])n.vrstice[i].teme=v}),600);return}
+  if(el.dataset.izj==="opomba"){const k=el.dataset.k,ime=el.dataset.ime,v=el.value;clearTimeout(ui._izjT);ui._izjT=setTimeout(()=>izjSet(k,ime,{opomba:v}),600);return}
 });
 document.addEventListener("change",async ev=>{
   const el=ev.target;
+  if(el.dataset.pril!=null&&el.files&&el.files.length){const f=[...el.files];el.value="";priloziGradivo(+el.dataset.pril,f);return}
+  if(el.dataset.mailto){const m=mailState(),e=el.dataset.mailto;m.to=el.checked?[...new Set([...m.to,e])]:m.to.filter(x=>x!==e);return}
+  if(el.dataset.mailcc){mailState().cc=el.checked;return}
+  if(el.dataset.mailopt){mailState()[el.dataset.mailopt]=el.checked;return}
+  if(el.dataset.izj&&el.dataset.izj!=="opomba"){izjSet(el.dataset.k,el.dataset.ime,{[el.dataset.izj]:el.value});return}
+  if(el.dataset.nc==="mesec"||el.dataset.nc==="vrsta"){const i=+el.dataset.i,f=el.dataset.nc,v=f==="mesec"?+el.value:el.value;nacrtSet(ui.nacrtLeto||new Date().getFullYear(),n=>{if(n.vrstice[i])n.vrstice[i][f]=v});return}
+  if(el.id==="nacrt-leto"){ui.nacrtLeto=+el.value;ui.confirm=null;render();return}
+  if(el.id==="lk-mins"){Lock.setMins(el.value);toast("Nastavitev zaklepa je shranjena.");return}
   if(el.id==="druzbaSel"){if(Rec.active){toast("Najprej ustavite snemanje.");paintSwitch();return}setDruzba(el.value);return}
   if(ui.draft&&el.dataset.prisoten!=null){const p=new Set(ui.draft.prisotni||[]);el.checked?p.add(el.dataset.prisoten):p.delete(el.dataset.prisoten);ui.draft.prisotni=[...p];updateDirty();return}
   if(el.dataset.predloga){const set=new Set(ui.izbranePredloge);el.checked?set.add(el.dataset.predloga):set.delete(el.dataset.predloga);ui.izbranePredloge=[...set];return}
@@ -1711,13 +2344,18 @@ window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();installEvt=
 setInterval(()=>{if(document.visibilityState==="visible")Sync.run()},5*60*1000);
 
 /* ---------- zagon ---------- */
-const h=(location.hash||"").slice(1);if(["pregled","seje","sklepi","poslovanje","direktor","predloge","porocilo","nastavitve"].includes(h))ui.tab=h;
+const h=(location.hash||"").slice(1);if(["pregled","seje","sklepi","poslovanje","direktor","predloge","porocilo","nastavitve","iskanje","clani"].includes(h))ui.tab=h;
 (async function init(){
+  let skip=false;try{skip=Date.now()-(+sessionStorage.getItem("ns.unlocked")||0)<180000;sessionStorage.removeItem("ns.unlocked")}catch(e){}
+  if(Lock.on()&&!skip){Lock.locked=true;Lock.paint()}
+  Lock.bioAvail().then(v=>{ui.bioAvail=v;if(ui.tab==="nastavitve")rr()});
   try{const saved=await IDB.get("kv","data");if(saved&&saved.col){D=saved;COLS.forEach(c=>D.col[c]=D.col[c]||{})}}catch(e){toast("Shramba na napravi ni na voljo – podatki se ne bodo ohranili.",8000)}
   migrateV1();derive();render();paintConn();
   await recoverRecording();render();
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
   await Sync.init();
+  {const cp=LS.get("consentPending","");if(cp){LS.set("consentPending","");if(cp==="mail"&&Sync.account)toast("Dovoljenje za pripravo e-pošte je podano. Odprite sejo in kliknite »Pripravi osnutek v Outlooku« še enkrat.",9000)}}
+  if(LS.get("calPending",false)){LS.set("calPending",false);if(Sync.account){try{await Cal.token();Cal.activate()}catch(e){toast("Povezava s koledarjem ni uspela – dovoljenje ni bilo podano.",7000)}}}
   if(location.hash.includes("code=")||location.hash.includes("error="))try{history.replaceState(null,"",location.pathname+"#"+ui.tab)}catch(e){}
   render();
   if("serviceWorker" in navigator&&location.protocol!=="file:"){
